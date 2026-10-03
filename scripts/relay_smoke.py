@@ -7,15 +7,18 @@ import sys
 import tempfile
 import time
 from datetime import datetime
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import urlopen
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 root = Path(__file__).resolve().parents[1]
 pilot = Path(os.environ.get('AZURPILOT_PATH', str(root.parent / 'AzurPilot')))
 sys.path.insert(0, str(pilot))
 from module.api.stock_exchange_service import StockExchangeService
+from module.scheduler.store import ProgramStore
+from module.runtime.account_local import LocalProtector
 
 binary = Path(os.environ.get('EXCHANGE_BIN', str(root / 'bin' / ('exchange.exe' if os.name == 'nt' else 'exchange'))))
 if not binary.is_file():
@@ -25,13 +28,16 @@ with socket.socket() as probe:
     port = probe.getsockname()[1]
 origin = f'http://127.0.0.1:{port}'
 os.environ['STOCK_EXCHANGE_URL'] = origin
-with tempfile.TemporaryDirectory() as directory:
-    workspace = Path(directory)
-    (workspace / 'config').mkdir()
-    row = {'Dashboard': {'ActionPoint': {'Total': 1200, 'Record': datetime.now().isoformat()}}}
+with tempfile.TemporaryDirectory() as directory, ExitStack() as protection:
+    workspace = Path(directory) / 'project'
+    (workspace / 'config').mkdir(parents=True)
+    protection.enter_context(patch.object(LocalProtector, 'key_directory', return_value=Path(directory) / 'keys'))
+    row = {'Alas': {}, 'Dashboard': {'ActionPoint': {'Total': 1200, 'Record': datetime.now().isoformat()}}}
     config = workspace / 'config' / 'test.json'
     config.write_text(json.dumps(row))
-    configs = SimpleNamespace(root=workspace, path=lambda name: workspace / 'config' / (name + '.json'), read=lambda _: (json.loads(config.read_text()), 'revision'))
+    (workspace / 'config' / 'other.json').write_text(json.dumps(row))
+    configs = SimpleNamespace(root=workspace, path=lambda name: workspace / 'config' / (name + '.json'),
+                              read=lambda name: (json.loads((workspace / 'config' / (name + '.json')).read_text()), 'revision'))
     env = {**os.environ, 'MOCK_MODE': 'true', 'LISTEN_ADDR': f'127.0.0.1:{port}', 'DATABASE_PATH': str(workspace / 'exchange.db'), 'FRONTEND_DIR': str(root / 'frontend' / 'dist')}
     process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     service = reloaded = None
@@ -58,7 +64,9 @@ with tempfile.TemporaryDirectory() as directory:
         assert other['status'] == 403 and other['data']['error']['code'] == 'INSTANCE_MISMATCH', other
         time.sleep(16)
         row['Dashboard']['ActionPoint'].update(Total=1300, Record=datetime.now().isoformat())
+        row['_stockInstance'] = json.loads(config.read_text())['_stockInstance']
         config.write_text(json.dumps(row))
+        ProgramStore(workspace / 'config').observe('test', 'ActionPoint', {'Total': 1300}, row['Dashboard']['ActionPoint']['Record'], 'isolated-smoke')
         service.sync_once('test', force=True)
         assert service.request('test', '/account')['data']['player']['quote']['price'] == 130000
         service.request('test', '/logout', 'POST', {})
