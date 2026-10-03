@@ -1,0 +1,47 @@
+.console-navigation{display:flex;gap:8px;margin-bottom:24px;padding-bottom:16px;border-bottom:1px solid var(--line)}
+.console-navigation button.active,.user-detail-tabs button.active{background:#29362e;color:var(--accent);border-color:#536454}
+.user-management{display:grid;gap:24px;min-width:0}
+.user-management .panel-title h2{margin-bottom:3px;font-size:20px}
+.user-filters{display:flex;align-items:flex-end;gap:16px;margin-bottom:20px}
+.user-search{display:flex;align-items:center;gap:10px;flex:1;min-width:0;border:1px solid #344250;border-radius:6px;padding:0 12px;background:#111a24;color:var(--muted)}
+.user-search:focus-within{border-color:var(--accent)}
+.user-search input{border:0;background:transparent;padding-left:0}
+.user-filters>label:last-child{display:grid;gap:5px;min-width:150px;color:var(--muted);font-size:11px}
+.user-management .user-table{min-width:1100px}
+.user-management td small{display:block;color:var(--muted);font-size:11px;margin-top:4px}
+.user-management td{font-variant-numeric:tabular-nums}
+.user-table .selected-user{background:#25342e}
+.table-identity{display:block;font-size:10px;max-width:170px;white-space:normal;overflow-wrap:anywhere;color:#b7c8ad}
+.user-status{display:inline-flex;border:1px solid #415c49;border-radius:4px;padding:1px 7px;font-size:11px;color:#b8ceb0;background:#24392d}
+.user-status.disabled{background:#3c292b;border-color:#654448;color:#e5aaaa}
+.user-empty{text-align:center!important;color:var(--muted);padding:32px!important}
+.user-pagination{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:18px;font-size:12px}
+.user-pagination>div,.user-detail-actions{display:flex;gap:8px}
+.user-detail{scroll-margin-top:20px}
+.user-detail h2:focus{outline:none}
+.user-identity{display:flex;align-items:center;gap:16px;background:#1b2c26;border:1px solid #405a48;border-radius:8px;padding:18px;color:var(--accent);margin-bottom:20px}
+.user-identity>div{display:grid;gap:5px;flex:1;min-width:0}
+.user-identity code{font-size:15px;letter-spacing:.5px;overflow-wrap:anywhere;user-select:all}
+.user-identity small{color:#9bad9e}
+.user-detail-tabs{display:flex;gap:8px;overflow-x:auto;padding-bottom:14px;margin-bottom:20px;border-bottom:1px solid var(--line)}
+.user-detail-tabs button{white-space:nowrap}
+.user-profile-grid{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);gap:32px}
+.user-edit-form fieldset{display:grid;gap:18px;border:0;padding:0;margin:0;min-width:0}
+.user-edit-form label{display:grid;gap:6px;color:#b5c1cb;font-size:12px;min-width:0}
+.user-edit-form small{color:var(--muted);font-size:11px}
+.user-form-pair{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.user-edit-form .user-disable-confirm{display:flex;align-items:flex-start;gap:10px;padding:12px;background:#382a2a;border:1px solid #624546;border-radius:6px;color:#e5bcbc}
+.user-disable-confirm input{margin-top:4px}
+.user-readonly{border-left:1px solid var(--line);padding-left:28px;min-width:0}
+.user-readonly dl{margin:0 0 18px;display:grid;gap:14px}
+.user-readonly dt{color:var(--muted);font-size:11px}
+.user-readonly dd{margin:3px 0 0;color:#d4ded8;font-variant-numeric:tabular-nums}
+.user-code{font-family:Consolas,monospace;overflow-wrap:anywhere}
+.user-readonly summary{cursor:pointer;color:var(--accent);margin-bottom:12px}
+.user-readonly>p{font-size:11px}
+.user-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:24px}
+.user-metrics>div{padding:15px;background:#111b24;border:1px solid var(--line);border-radius:6px;min-width:0}
+.user-metrics span{display:block;color:var(--muted);font-size:11px;margin-bottom:5px}
+.user-metrics strong{font-size:16px;font-weight:500;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.user-table-note{margin-bottom:14px}
+@media(max-width:800px){.user-profile-grid{grid-template-columns:1fr;gap:24px}.user-readonly{border-left:0;border-top:1px solid var(--line);padding:24px 0 0}.user-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.user-detail-actions button{font-size:11px;padding:7px}.user-form-pair{grid-template-columns:1fr}.user-filters{flex-direction:column;align-items:stretch;gap:12px}.user-identity{gap:10px;flex-wrap:wrap;padding:14px}.user-identity>svg{display:none}.user-identity code{font-size:12px}.user-identity>div{flex-basis:100%}.user-identity small{font-size:10px}.user-management .panel-title{align-items:flex-start;flex-wrap:wrap}.user-pagination{flex-wrap:wrap}.console-navigation{flex-wrap:wrap}.user-detail-tabs{gap:5px}.user-detail-tabs button{font-size:11px;padding:7px 10px}}

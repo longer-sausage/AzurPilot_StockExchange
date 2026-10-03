@@ -1,0 +1,148 @@
+# 茗喵证券交易所 · MMEX
+
+以 AzurPilot 玩家总行动力为股价的模拟证券游戏。交易主界面位于相邻 `../AzurPilot/frontend/src/stock/`，本仓库 `frontend/` 只提供 React + TypeScript `/console` 管理控制台，Go 单进程提供 `/api` 和静态页面，SQLite 持久化账户、委托凭据、历史报价及月赛排名。默认 API / 页面域名为 `stock.nanoda.work`，通过环境变量修改。
+
+## 本机体验
+
+```powershell
+npm ci --prefix frontend
+npm run dev:mock --prefix frontend
+```
+
+需要 Go >= 1.24，或者已有 `bin/exchange.exe`（Linux 为 `bin/exchange`）。开发启动器优先使用这个二进制；否则运行 `go run ./cmd/exchange`，也可以通过 `GO_BIN` 指定 Go 的绝对路径。管理员控制台为 http://127.0.0.1:5178/console。交易主界面需从 AzurPilot 实例进入；交易所 origin 首页只显示入口说明。
+
+在另一个终端进入相邻 AzurPilot 仓库，运行：
+
+```powershell
+$env:STOCK_EXCHANGE_URL='http://127.0.0.1:8080'
+npm run dev:mock --prefix frontend
+```
+
+打开 AzurPilot 的 http://127.0.0.1:5173，进入实例运行总览，点击资源卡片调节键左侧的交易所入口。
+
+- 玩家：`海风指挥官` / `mock-player-password`；也可直接注册新用户名。
+- 管理员：`mock-admin-password`。
+- 注册、登录和管理员登录都使用 Cloudflare 官方测试验证码，前端使用公开测试 site key `1x00000000000000000000AA`，Go 用官方测试 secret 调用 Siteverify，须联网；不再使用本地复选框或直接放行。测试密钥自动通过测试挑战，生产只接受真实密钥及真实验证响应。
+- Mock 使用真实 Go 交易引擎和独立 `data/mock.db`；只替换验证码、种子行情和演示赛期。模拟数据库不进入版本控制。
+
+普通开发模式先启动 Go，再运行 `npm run dev --prefix frontend`。Vite 将 `/api` 代理到本机 8080；生产管理控制台与 API 同源；玩家终端经 AzurPilot 的认证 WebSocket 转发，不在浏览器中保存交易会话、上传令牌或实例私钥。
+
+## 游戏与交易
+
+- 证券详情提供分时、日 K、M5/M10/M20/M30/M60、真实成交量和公开逐笔成交；原生终端使用现有 ECharts，支持 MA、EXPMA、BOLL、ENE、BBI、MACD、多空趋势、全屏及缩放平移。K 线按实际采集记录聚合；每月原始历史不截断为 2000 条。5 秒条件缓存刷新，隐藏页面停止轮询，指标计算留在浏览器。
+- AzurPilot 中央资源入库仅追加总行动力历史保存，游戏采集脚本不改动；持久补传日志按月轮转、每批至多 1024 点、最短 3 秒发送，断网与重启持续补传，失败最大 60 秒退避。每五分钟重读源数据并进行 count / SHA-256 校对，同毫秒修正会重算受影响 K 线。完整性仅涵盖实际采集、已保存的记录，升级前覆盖掉或离线未采集的数据无法还原；服务器不验证游戏真实性。
+
+- 每位注册玩家自动上市一支股票，证券代码 `MM000001` 等，初始现金默认 **20,000,000 模拟币**，可在控制台调整（1 至 1 万亿，最多两位小数）。新开户采用发布时的金额，已有账户当前余额及本赛季本金保留；收益率按个人实际起始本金计算。用户名进行 Unicode 全角归一及大小写折叠后唯一，不回收已停用用户名。
+- **1 点总行动力 = 1 模拟币/股**。行情直接同步实例现有资源记录，服务器不上传/识别截图，不验证行动力真实性。无最近记录时以 0 上市，后续收到新记录后更新；0 价股票暂停成交。旧实时 `/quotes` 接口只接受最近 24 小时内、按时间递增的整数记录，相同时间不同数值会拒绝，最短间隔 15 秒。新增历史接口允许当前及此前 12 个月的毫秒原始记录、同一时间修正和批量补传，也能及时更新新鲜的最新报价；客户端最短 3 秒一批。报价超时后暂停新成交，仍按最后有效报价估值、计借券费和执行风控。
+- 买入、卖出、卖空、回补四个方向；市价、限价、止损触发市价；DAY / GTC；撤单释放冻结资金与股份。止损跳空时以触发后的实际报价成交，不保证触发价。不能交易自己的股票，反向持仓需先平仓。
+- 所有成交由交易所提供无限**模拟流动性**，全量成交，不设置可借证券库存或融券定位要求。为保护数值和数据库，单笔数量最多 100 万股，单笔名义金额上限 1 万亿模拟币；可以在资金及保证金允许范围内多次提交，不设置融券库存总量限制。异常大额开仓还需符合 64 位账本安全范围，按最高可能报价核验，达到边界仍可平仓。没有真实五档盘口、部分成交、价格冲击或真实资产。
+- 买入与卖空均可选择杠杆倍数；上限为 `max(1, floor(1 / IMR))`，最多 10 倍，默认 50% IMR 支持最高 **2 倍**。1 倍买入使用全额现金，2 倍买入只支付一半本金和全额交易费，其余记为融资借款。空头冻结所选杠杆对应的自有保证金及全部卖空所得现值，所得不能再次开仓。
+- 融资利息按 `未偿本金 × 融资年利率 × 持有秒数 / (365 × 86400)` 累计，默认 8%，可在管理配置修改。卖出按股份比例偿还借款，仅净款进入现金交收；现金与融资买入可在同一证券中混合，保证金按股数精确加权，不重复冻结首付款。挂单只冻结自有资金，实际成交时才放贷；规则变更后不符合当前杠杆上限的开仓挂单会拒绝。
+- 净值为现金 + 多头市值 − 融资本金 − 空仓负债 − 待落账融资利息与借券费。维持保证金为 `(仍有融资借款的多头现值 + 空仓现值) × MMR`；不足时撤销全部挂单、卖出多头偿还融资并回补空头，跳空债务保留至本季结束。融资多头跌价后的追加初始保证金差额会冻结可用现金。
+- 借券费按 `空仓现值 × 年费率 × 持有秒数 / (365 × 86400)` 累计；变价前先结算旧价区间，小数分结转。金额以整数分保存；没有浮点余额或收费。
+- T+N 可卖股份与 T+N 可用现金分别配置，跳过配置的周末与休市日期。关闭页面不会清除委托，停止服务后重启恢复持仓、挂单与累计费用。
+- 每月 **5 日 00:00（上海时间）开赛，倒数第 5 日 23:59:59 结束**。例如 2026 年 10 月为 10 月 5 日至 10 月 27 日；闰年 2 月截止 25 日。后台最多 15 秒内完成到期结算，业务请求也检查赛期。按最后报价强制平仓并收取正常交易费，保存最终排名；次月 1 日按届时配置重置所有玩家本金（默认 2,000 万），5 日开放交易。长期离线后重启也会补结算。
+- 控制台可编辑/新建/删除市场预设、暂停交易、调整初始资金、佣金、最低佣金、印花税、取整、征费、借券费、融资年利率、IMR、MMR、整手、交易时段、时区、休市日和赛期；新赛期日期从下月生效。已受理委托保留原手续费及交收快照，执行时仍接受当前保证金风控。
+- 交易所收入按佣金、模拟印花税、征费、借券费、融资利息拆分，展示本季与累计值。现实的税费通常代收转付；本游戏统一列入模拟交易所统计，不能兑换、充值或提现。
+- 新手学院提供六步教程、26 个词条和当前规则，明确说明融资杠杆、做空、保证金、交收和强平风险。玩家终端只保留市场、持仓、委托、排行榜与教程；没有手动行动力同步页面或控制台链接，后台自动上传仍持续运行。管理员直接访问 `/console`。
+- 控制台的「用户管理」支持用户名、证券代码、身份码及实例 ID 查询、正常 / 停用筛选和分页；用户详情展示注册时间、永久绑定、行情、资金、交收、持仓及委托。可修改用户名、重设密码、增减现金与停用 / 恢复账户；现金扣减检查冻结、交收和保证金，保存失败整体回滚，重设密码或停用会撤销旧会话。
+- 每位用户拥有独立、唯一且永久的随机身份识别码，旧账户升级时自动补发。仅本人和管理员能查看：本人点击 AzurPilot 交易终端右上角用户名，管理员打开用户详情。公开行情、排行榜与成交记录不含此码；改名、赛季重置和重启后保留，用于核实账户身份。
+
+预设以 A 股、港股、美股规则作教学参考；佣金和借券费为可调游戏示例。港股手数统一简化，美股低价股最低保证金、币种/汇率、特定证券税收豁免及真实假期自动同步没有逐项复制。管理员应自行维护假期。
+
+## 与 AzurPilot 连接
+
+交易主界面和教程位于 `../AzurPilot/frontend/src/stock/`，由 `src/pages/StockExchange.tsx` 挂载为原生 React 页面。入口在运行总览资源卡片调节按钮**左边**，无需 iframe 或消息桥。本仓库 Go 提供 `/api`，React 提供 `/console`。
+
+AzurPilot 后端环境：
+
+```sh
+STOCK_EXCHANGE_URL=https://stock.nanoda.work
+# 本机开发用 http://127.0.0.1:8080，直接连接 Go API
+```
+
+注册或首次登录旧账户时，账户与当前实例的持久 UUID / Ed25519 身份**永久一对一绑定**。另一个实例不能登录该账户，同一实例不能注册第二个账户；退出登录只清除交易会话，不解除绑定，也不停止后台同步。复制实例配置不会复制身份。更换模拟器连接设置不改变实例身份。
+
+实例身份文件和仅上传凭据分别保存在 AzurPilot 的 `cache/stock-exchange/identities/` 和 `bindings.json`（Unix 权限 700 / 600），需一同备份；身份丢失不能靠新建同名实例恢复，须恢复原身份备份。交易会话只保存在 AzurPilot 后端内存，24 小时过期，后端重启后重新登录并完成验证码；上传凭据仍恢复后台同步。
+
+后台每 2 秒只比较配置文件 / 运行观察 SQLite 的修改状态，未变化时不重读配置、不签名、不访问交易所；仅转发新行动力记录，最多每 15 秒上传一次。失败在 15 秒后重试同条记录，最多 3 次，新记录重新开始。没有新增游戏截图、OCR 或游戏操作，也没有修改游戏任务脚本。实例签名只确认身份和请求完整性，不证明游戏数据真实。
+
+**Cloudflare 域名配置必须包含 AzurPilot 地址栏 hostname**，以及管理控制台的 `stock.nanoda.work`。例如本地 AzurPilot 的 hostname 是 `localhost` 或 `127.0.0.1`，远程 WebUI 为 `pilot.example.com`；这些值同时加入 Turnstile 控制台允许域名与交易所 `.env` 的 `TURNSTILE_HOSTNAMES`。只给 stock 域名授权会使原生页面的注册和登录验证码被拒绝。公开 site key `0x4AAAAAAFMCQstp3hgd939a` 固定在 AzurPilot 玩家前端及本仓库管理前端，后端不读取、不下发 site key；更换时须修改两个前端并重新构建。私密 secret 只留在 Go 环境变量 `TURNSTILE_SECRET_KEY` 中。注册及登录必须通过服务端 Siteverify 校验，缺失、过期或来源/用途不匹配的验证码均拒绝。
+
+`ALLOWED_ORIGINS` 控制浏览器直连 Go API 的来源；原生页面通过 AzurPilot 服务端代理，HTTP 请求无需浏览器跨域或嵌入权限。
+
+## Debian 一键部署
+
+推荐先在开发机 / CI 构建，服务器无需 Node、Go 或 C 编译器：
+
+```sh
+bash scripts/release.sh
+# 将 deploy.sh、.env.example 和 releases/mingmiao-exchange.tar.gz 上传到服务器同一目录
+cp .env.example .env
+chmod 600 .env
+# 编辑 .env，填写真实密钥、密码、外部 TLS 证书/无密码私钥绝对路径及允许来源；先将域名 DNS 指向此服务器
+sudo bash deploy.sh mingmiao-exchange.tar.gz
+```
+
+`deploy.sh` 支持源代码目录直接运行：`sudo bash deploy.sh`，没有构建产物时安装构建工具并按系统可用资源编译。极低内存服务器使用预构建包可避免构建开销。脚本仅支持 Debian amd64 / arm64，需要 root、systemd、可访问软件源，80 / 443 端口可用；已有服务器服务配置不会被删除。
+
+填写以下环境变量（**不要将私密值发到聊天或提交 Git**）：
+
+| 变量 | 用途 |
+| --- | --- |
+| `EXCHANGE_DOMAIN` | 默认 `stock.nanoda.work` |
+| `TURNSTILE_SECRET_KEY` | Cloudflare 的服务器 secret，前端永不收到 |
+| `TURNSTILE_HOSTNAMES` | Siteverify 可接受的 hostname，逗号分隔 |
+| `ADMIN_PASSWORD` | 至少 12 字符 |
+| `SESSION_SECRET` | 至少 32 字符的随机密钥，更换会使所有会话失效 |
+| `ALLOWED_ORIGINS` | 浏览器直连 Go API 的 CORS 来源 |
+| `TLS_CERT_FILE` / `TLS_KEY_FILE` | 必填，外部证书链及无密码私钥的可读绝对路径 |
+
+脚本强制使用外部证书，不安装 certbot、不签发证书、不设置续期任务。未配置证书、文件不可读、已过期、域名不符或公私钥不匹配会拒绝部署。证书校验在停服及替换文件之前完成；HTTP 自动跳转 HTTPS。证书由外部流程维护，更新后执行 `nginx -t && systemctl reload nginx`。使用 Cloudflare 代理时设置 **Full (strict)**，Turnstile 中允许管理控制台及 AzurPilot 的实际 hostname。脚本从 Cloudflare 官方拉取受信代理网段，nginx 只信任这些来源的 `CF-Connecting-IP`，Go 只信任本机反代的真实 IP 头。
+
+程序安装至 `/opt/mingmiao-exchange`，数据库独立保留于 `data/exchange.db`，每次升级停服后连同 WAL 备份。systemd 设置开机启动、自动重启和权限隔离；不再设置固定 CPU、Go 内存、进程内存或任务数上限，旧环境文件里的 `GOMAXPROCS=1` / `GOMEMLIMIT=64MiB` 也不再被部署脚本写入服务环境。Go 使用系统默认调度，认证按启动时可用 CPU 配置并发。数据库使用 WAL / NORMAL、单连接、2 MiB 页缓存；关闭系统时先完成在途请求。nginx 复用上游连接及 TLS 会话，异常请求在进入 Go 之前过滤；按 IP 防护，不设置整个服务的固定吞吐上限。
+
+```sh
+systemctl status mingmiao-exchange
+journalctl -u mingmiao-exchange
+sudo systemctl restart mingmiao-exchange
+# 更新：上传新包后重新运行 deploy.sh；环境变量更改后重新部署或重启服务
+```
+
+环境文件按字面值解析，不执行 shell 代码。程序日志不输出密码、上传凭据、验证码 token 或数据库账户内容。生产脚本拒绝 `MOCK_MODE=true`；程序的 mock 监听也只能是回环地址。
+
+## 性能和数据边界
+
+单进程内存账本 + SQLite 原子事务，提交失败恢复内存。事务仅复制、备份和落盘受影响账户；每个证券索引持仓/挂单订阅者，报价更新不扫描所有玩家进行成交。行情和排行榜共享编码缓存 + ETag，空闲市场最多每分钟重新编码，有空仓或融资持仓时每 15 秒刷新计费估值；交易或报价变动使缓存立即失效。浏览器每 15 秒检查，隐藏时停查；HTTP Date 用于校准界面时间。融资沿用现有账本、订阅索引与计息循环，不新增轮询、数据库查询或服务。所有资金变更由服务端核验，客户端费用估算仅供提交前参考。 定时任务仅遍历存在保证金持仓、待交收款项或挂单的账户；月赛结算仍统一处理所有玩家。时区规则缓存复用，IP 桶每分钟至多清理一次，避免异常访问反复扫描全部限流记录。
+
+认证每 IP 每分钟最多 8 次，普通 API 每 IP 每分钟最多 240 次；CF 网络验证并发为 `max(4, 2×GOMAXPROCS)`，bcrypt 计算并发为 `GOMAXPROCS`，繁忙时立即返回 503，不堆积认证队列。使用 bcrypt 密码哈希、Siteverify 成功/hostname/action 三重核验；验证码过期/错误时必须重新完成挑战。每账户最多 20 个挂单；界面保留最近 100 个已结束委托；持久化幂等回执确保重复请求不会再次扣款。每支股票保存最近 2,000 条报价，接口返回最近 240 条；月赛归档保留在数据库，接口展示最近 12 个月。 nginx 设置 64 KiB 请求体、请求超时、每 IP 64 个处理中的连接、普通请求 10 次/秒（允许 40 次突发）及认证 8 次/分钟（允许 3 次突发），超限立即返回 429。这些防护限制单个访问来源，不限制所有玩家合计吞吐。
+
+按诚实玩家假设使用实例自报行动力，不进行真实性验证。签名用于永久实例绑定和请求完整性；基本范围、格式、顺序检查只防止传输/账本错误。游戏禁止自我交易、同记录改价和倒序数据。未接入游戏账号身份证明、真实交易所行情、真实资金或交易所节假日服务。
+
+## 验证
+
+```sh
+go test ./...
+go test -race ./...
+go vet ./...
+go test -run '^$' -bench BenchmarkMarketCache -benchmem ./internal/exchange
+bash -n deploy.sh scripts/release.sh
+npm run build --prefix frontend
+npx --prefix frontend playwright install chromium
+npm run test:e2e --prefix frontend
+```
+
+引擎测试覆盖用户名归一/唯一性、初始资金、并发幂等、重启恢复、冻结/撤单、变价触发、借券费区间、T+N、周末/假期/DST、债务强平、月末/闰月、归档与重置、过期数据、上传凭据轮换、真实 Siteverify 的 hostname/action/失败结果、管理员权限、304、磁盘失败回滚、私有身份码迁移和休眠挂单不写盘。本仓库浏览器测试覆盖管理控制台预设发布及用户查询、资料编辑、资金校验、密码重设和停用恢复；AzurPilot 的独立交易所浏览器测试覆盖原生入口、验证码开户与登录、买入、撤单、教程、私有身份码、手机布局和跨实例拒绝。
+
+AzurPilot 的独立同步测试为 `uv run python -m unittest tests.test_stock_exchange`，入口浏览器测试为 `npm run test:e2e:stock --prefix frontend`（在 AzurPilot 仓库执行）。Windows 原有 API 套件的一项符号链接测试需要系统创建符号链接权限；其余项目可正常验证。
+
+## 参考资料
+
+- [Cloudflare Turnstile 服务端验证](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/)：一次性 token、服务端校验和响应字段。
+- [Cloudflare 真实访问 IP](https://developers.cloudflare.com/support/troubleshooting/restoring-visitor-ips/restoring-original-visitor-ips/)：只信任受信代理的 IP 头。
+- [上交所交易规则（2026 年修订）](https://www.sse.com.cn/lawandrules/sselawsrules2025/stocks/exchange/c/c_20260424_10816482.shtml)：股份回转交易和交易时段参考。
+- [港交所交易税费](https://www.hkex.com.hk/Services/Rules-and-Forms-and-Fees/Fees/Securities-(Hong-Kong)/Trading/Transaction?sc_lang=en)：印花税及交易征费参考。
+- [FINRA 保证金参考](https://www.finra.org/rules-guidance/notices/21-12)：初始和维持保证金区分。
+- [SEC T+1 交收](https://www.sec.gov/newsroom/press-releases/2024-62)：美股现金交收参考。
+
+部署配置验证：`python scripts/check-deploy.py`（需已运行的 Docker）。使用临时 nginx 容器测试缺证书、错域名、错私钥及有效证书，并对脚本生成的实际 nginx 配置执行 `nginx -t`，不改宿主服务。
