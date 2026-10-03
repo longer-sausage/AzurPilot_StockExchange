@@ -2,12 +2,13 @@
 import json
 import os
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 from datetime import datetime
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import urlopen
@@ -17,6 +18,7 @@ root = Path(__file__).resolve().parents[1]
 pilot = Path(os.environ.get('AZURPILOT_PATH', str(root.parent / 'AzurPilot')))
 sys.path.insert(0, str(pilot))
 from module.api.stock_exchange_service import StockExchangeService
+from module.api.stock_exchange_history import SHANGHAI, history_point
 from module.scheduler.store import ProgramStore
 from module.runtime.account_local import LocalProtector
 
@@ -38,6 +40,13 @@ with tempfile.TemporaryDirectory() as directory, ExitStack() as protection:
     (workspace / 'config' / 'other.json').write_text(json.dumps(row))
     configs = SimpleNamespace(root=workspace, path=lambda name: workspace / 'config' / (name + '.json'),
                               read=lambda name: (json.loads((workspace / 'config' / (name + '.json')).read_text()), 'revision'))
+    now = datetime.now(SHANGHAI)
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=123000)
+    historical = [{'ts': (start + (now - start) * (i / 3002)).isoformat(), 'ap_total': 1100 + i % 50}
+                  for i in range(3001)]
+    with closing(sqlite3.connect(workspace / 'config' / 'cl1_data.db')) as stats, stats:
+        stats.execute('CREATE TABLE cl1_data(instance TEXT,month TEXT,data_json TEXT,encrypted_blob BLOB,PRIMARY KEY(instance,month))')
+        stats.execute('INSERT INTO cl1_data VALUES(?,?,?,NULL)', ('test', now.strftime('%Y-%m'), json.dumps({'ap_snapshots': historical})))
     env = {**os.environ, 'MOCK_MODE': 'true', 'LISTEN_ADDR': f'127.0.0.1:{port}', 'DATABASE_PATH': str(workspace / 'exchange.db'), 'FRONTEND_DIR': str(root / 'frontend' / 'dist')}
     process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     service = reloaded = None
@@ -60,6 +69,20 @@ with tempfile.TemporaryDirectory() as directory, ExitStack() as protection:
         assert service.status('test')['bound'] and service.status('test')['authenticated']
         account = service.request('test', '/account')['data']
         assert account['player']['quote']['price'] == 120000
+        expected = {history_point(point['ap_total'], point['ts'])[0]: point['ap_total'] for point in historical}
+        expected[history_point(1200, row['Dashboard']['ActionPoint']['Record'])[0]] = 1200
+        for _ in range(5):
+            service.sync_once('test', force=True)
+        stock_id = account['player']['id']
+        detail_path = f"/stocks/{stock_id}?period=day&month={now:%Y-%m}"
+        detail = service.request('test', detail_path)['data']
+        assert detail['coverage']['count'] == len(expected), detail['coverage']
+        assert detail['coverage']['firstObservedAt'] == min(expected), detail['coverage']
+        assert detail['coverage']['lastObservedAt'] == max(expected), detail['coverage']
+        assert detail['coverage']['reconciledAt'] > 0, detail['coverage']
+        assert sum(bar['samples'] for bar in detail['bars']) == len(expected)
+        first_day = service.request('test', f"/stocks/{stock_id}?period=time&month={now:%Y-%m}&day={now:%Y-%m}-01")['data']
+        assert first_day['bars'] and first_day['bars'][0]['open'] == historical[0]['ap_total'] * 100
         other = service.request('other', '/login', 'POST', {k: v for k, v in body.items() if k != 'acceptedNotice'})
         assert other['status'] == 403 and other['data']['error']['code'] == 'INSTANCE_MISMATCH', other
         time.sleep(16)
@@ -77,7 +100,7 @@ with tempfile.TemporaryDirectory() as directory, ExitStack() as protection:
         assert not reloaded.status('test')['authenticated']
         logged = reloaded.request('test', '/login', 'POST', {k: v for k, v in body.items() if k != 'acceptedNotice'})
         assert logged['status'] == 200, logged
-        print('Python 原生代理 → Go：开户、实例签名、跨实例拒绝、1200 → 1300 同步、退出与重启绑定恢复全部通过')
+        print('Python 原生代理 → Go：新开户整月 3001 条注册前历史补传、日 K / 月初分时查询、摘要校对、实例隔离、实时同步、退出与重启绑定恢复全部通过')
     finally:
         if service:
             service.close()
