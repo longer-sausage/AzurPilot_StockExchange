@@ -75,6 +75,14 @@ STOCK_EXCHANGE_URL=https://stock.nanoda.work
 
 推荐先在开发机 / CI 构建，服务器无需 Node、Go 或 C 编译器：
 
+Windows 安装 Go >= 1.24、Node.js >= 18 和 PowerShell 7 后，在仓库根目录执行（使用系统自带的 `tar`，无需 Git Bash / WSL）：
+
+```powershell
+pwsh -NoProfile -File .\scripts\release.ps1
+```
+
+脚本先构建前端并运行本机 Go 测试，再交叉编译 Linux amd64 / arm64，生成 `releases/mingmiao-exchange.tar.gz`。运行结束后恢复原有 Go 环境变量；任一步失败会停止发布。Linux / Git Bash 可使用下面的 Bash 脚本构建，两个脚本生成相同结构的部署包：
+
 ```sh
 bash scripts/release.sh
 # 将 deploy.sh、.env.example 和 releases/mingmiao-exchange.tar.gz 上传到服务器同一目录
@@ -110,6 +118,115 @@ sudo systemctl restart mingmiao-exchange
 ```
 
 环境文件按字面值解析，不执行 shell 代码。程序日志不输出密码、上传凭据、验证码 token 或数据库账户内容。生产脚本拒绝 `MOCK_MODE=true`；程序的 mock 监听也只能是回环地址。
+
+## 前端部署与 `/console` 404 排查
+
+本仓库的 `frontend/` 是管理控制台，访问地址为 `https://stock.nanoda.work/console`（使用不带末尾 `/` 的地址）。玩家交易页面位于相邻 AzurPilot 仓库，修改玩家页面后须另行构建、部署 AzurPilot 的前端。
+
+生产部署链路为：浏览器 → nginx → `127.0.0.1:8080` Go 服务 → `FRONTEND_DIR` 下的静态文件。Go 二进制**不内嵌前端**，只上传后端程序不够；必须同时部署 `index.html`、`assets/` 及其他构建文件。`/console` 由 Go 返回 `index.html`，React 再显示管理控制台，无需创建 `console/` 目录。前端以域名根路径构建，资源路径为 `/assets/...`，API 路径为 `/api/...`，不要把整个 `dist` 放进 `dist/console/`，也不要将 Vite 的 `base` 改成 `/console/`。
+
+### 推荐：部署完整发布包
+
+在 Windows 开发机的仓库根目录执行：
+
+```powershell
+pwsh -NoProfile -File .\scripts\release.ps1
+```
+
+将生成的 `releases/mingmiao-exchange.tar.gz` 和仓库里的 `deploy.sh` 上传到服务器同一目录，首次部署还需 `.env.example` 并按前文填写 `.env`。在服务器上传目录执行：
+
+```sh
+# Windows 上传的旧脚本如存在 CRLF，先转换为 LF
+sed -i 's/\r$//' deploy.sh
+sudo bash deploy.sh mingmiao-exchange.tar.gz
+```
+
+脚本会校验发布包，将前端安装到 `/opt/mingmiao-exchange/frontend/dist`，在 `/opt/mingmiao-exchange/exchange.env` 中设置 `FRONTEND_DIR`，并配置 nginx 反向代理，HTTP / HTTPS 同时监听 IPv4 和 IPv6。如果使用了自定义 `INSTALL_DIR`，下面所有 `/opt/mingmiao-exchange` 路径须相应替换。
+
+更新时上传新的发布包，再执行同一部署命令。脚本会停服备份数据库及 WAL、覆盖后端和前端、重启交易所，再重载 nginx；数据库和账户保留。完成前会比对运行中的后端与发布包二进制，并核对 IPv4 / IPv6 源站 `/console` 返回页面的 SHA-256 和 `/api/meta`。只有检查通过才显示“部署完成”。如果在 nginx 阶段失败，后端 / 前端可能已经更新，旧 nginx 配置仍可能继续提供页面，应修复报错并重新执行部署。
+
+### 只更新管理控制台
+
+在开发机仓库根目录执行（PowerShell / Linux 均可）：
+
+```sh
+npm ci --prefix frontend --no-audit --no-fund
+npm run build --prefix frontend
+```
+
+把**整个** `frontend/dist` 目录上传到服务器仓库的 `frontend/dist`，确认文件已上传完整后，在服务器仓库根目录执行：
+
+```sh
+test -f frontend/dist/index.html
+sudo install -d -m 755 /opt/mingmiao-exchange/frontend/dist
+sudo cp -R frontend/dist/. /opt/mingmiao-exchange/frontend/dist/
+sudo chmod -R a+rX /opt/mingmiao-exchange/frontend/dist
+```
+
+默认安装中仓库目录与 `/opt/mingmiao-exchange` 是两个目录，只在仓库中运行 `npm run build` 不会自动更新线上文件。Go 在请求时读取静态文件，同一路径下更新前端通常无需重启；如果修改了已安装服务的 `FRONTEND_DIR`，须执行 `sudo systemctl restart mingmiao-exchange`。生产环境不需要启动 Vite 开发服务器。
+
+### 逐层定位 404
+
+在 Debian 服务器执行，先确认前端文件和服务账号权限，再直接请求 Go，绕过 nginx 和 CDN：
+
+```sh
+ls -l /opt/mingmiao-exchange/frontend/dist/index.html
+ls -l /opt/mingmiao-exchange/frontend/dist/assets/
+sudo -u mmex test -r /opt/mingmiao-exchange/frontend/dist/index.html
+sudo grep '^FRONTEND_DIR=' /opt/mingmiao-exchange/exchange.env
+sudo systemctl status mingmiao-exchange --no-pager
+curl -i http://127.0.0.1:8080/healthz
+curl -i http://127.0.0.1:8080/api/meta
+curl -I http://127.0.0.1:8080/console
+```
+
+预期 `/healthz`、`/api/meta` 和 `/console` 都返回 200，前两者为 JSON，最后一个为 HTML。健康检查不检查前端文件，只有 `/healthz` 成功不能证明控制台已正确部署。
+
+| 检查结果 | 排查方向 |
+| --- | --- |
+| 本机 8080 连接失败 | 检查 systemd 状态及 `journalctl -u mingmiao-exchange -n 100 --no-pager` |
+| 本机 `/api/meta` 为 200，但 `/console` 为 404 | 检查 `FRONTEND_DIR`、`index.html` 是否部署及 `mmex` 是否有目录访问 / 文件读取权限 |
+| 本机接口和页面均为 200，但公网为 nginx 的 HTML 404 | 优先检查域名对应的 nginx `server` / `location`，以及 CDN 的源站地址、端口和 Host 配置 |
+| 页面为 200，但 JS / CSS 为 404 | 检查是否上传完整 `assets/`、是否错误添加 `/console/` 前缀，以及资源请求是否也代理到 Go |
+
+默认部署应将页面、静态资源和 API 都代理给 Go。检查**实际接收该域名 HTTPS 请求**的 nginx `server`（通常为 `/etc/nginx/sites-available/mingmiao-exchange`），确保包含以下通用路由；保留部署脚本生成的 TLS、真实 IP 和 API 限流配置：
+
+```nginx
+# 放在 server_name stock.nanoda.work 对应的 HTTPS server 内
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+检查是否存在重复的 `server_name stock.nanoda.work`，或其他更优先的 `location /console`、`location /assets/`、`location /api/` 将请求转到错误目录 / 服务。修改后校验配置并重新加载：
+
+```sh
+sudo nginx -T
+sudo nginx -t && sudo systemctl reload nginx
+# 在源站本机测试 HTTPS 虚拟主机，绕过 DNS / CDN；非公共信任证书需用 --cacert 指定相应 CA
+curl --resolve stock.nanoda.work:443:127.0.0.1 -I https://stock.nanoda.work/console
+curl --resolve stock.nanoda.work:443:127.0.0.1 -i https://stock.nanoda.work/api/meta
+# 再检查公网链路
+curl -I https://stock.nanoda.work/console
+curl -i https://stock.nanoda.work/api/meta
+```
+
+如果源站 nginx 已返回 200、公网仍返回 404，检查当前 CDN / DNS 是否指向这台服务器，以及回源 Host 是否为 `stock.nanoda.work`；修复后再清除可能缓存的旧 404。控制台加载后若登录验证码失败，按前文配置 Turnstile 的允许域名、`TURNSTILE_HOSTNAMES` 和服务器 secret。
+
+如果部署时 nginx 启动失败并报告 `Address already in use`，但 `ss -ltnp` 显示端口由已有 nginx 占用，可能存在未被 `nginx.service` 管理的 master，或 `/run/nginx.pid` 为空 / 过期。新版脚本会在 systemd 重载失败或服务未激活时扫描 `/proc`，核对 nginx 可执行文件、网络命名空间和 `/etc/nginx/nginx.conf`，对唯一匹配的 master 发送 HUP；不会写入 PID 文件或让 systemd 接管现有进程。只有没有 nginx master 时才尝试 systemd 启动，识别不明确时直接报错。原有启动 / 保活机制仍需维护；若要迁移到 systemd，先用 `ps` 和 `/proc/<master-pid>/cgroup` 确认现有启动来源，再安排迁移，避免影响同机其他站点。
+
+如果 `nginx -t` 报 `limit_req_zone ... is already bound`，检查同名限流区是否被重复定义，以及站点是否被 `/etc/nginx/conf.d` 和 GMSSH 等面板的 `include` 同时加载。同一套站点配置只保留一个加载入口；限流区定义只保留一份，对应站点可以继续引用它。应先确认重复来源再调整，避免误删其他站点的配置。新版脚本在停服 / 替换交易所文件前检查现有 nginx 配置，已有配置无效时会提前退出。旧版部署失败后若交易所已被停止，可先执行 `sudo systemctl daemon-reload && sudo systemctl start mingmiao-exchange` 恢复后端，再修复 nginx 配置并重新部署。
+
+还需分别验证 IPv4 / IPv6：上面的 `127.0.0.1` 只测试 IPv4。如果交易所只配置了 `listen 443 ssl;`，而其他站点配置了 `listen [::]:443 ssl;`，CDN 通过 IPv6 回源时可能命中其他站点，出现 IPv4 控制台为 200、公网为 404 的情况。可在服务器运行：
+
+```sh
+curl -kI --resolve 'stock.nanoda.work:443:[::1]' https://stock.nanoda.work/console
+```
+
+此处 `-k` 仅用于本机源站诊断。如果 IPv6 测试返回其他站点的 404，在交易所 HTTPS `server` 中保留 `listen 443 ssl;` 并添加 `listen [::]:443 ssl;`，HTTP `server` 中保留 `listen 80;` 并添加 `listen [::]:80;`，再运行 `sudo nginx -t && sudo systemctl reload nginx`。若服务器不使用 IPv6，则改为让 CDN 使用正确的 IPv4 源站。两种协议均返回 200 后，仍需确认 CDN 回源 Host / HTTPS SNI 与域名一致。
 
 ## 性能和数据边界
 
