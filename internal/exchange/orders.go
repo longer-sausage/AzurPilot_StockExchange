@@ -50,6 +50,9 @@ func (e *Engine) Submit(id int64, in OrderInput) (*Order, error) {
 		if stock == nil || stock.Disabled {
 			return fail("NOT_FOUND", "该股票不存在或已停牌")
 		}
+		if stock.Delisted {
+			return fail("STOCK_DELISTED", "该股票本月已退市，下月重新判断上市资格")
+		}
 		r := e.state.Settings.Active
 		if !e.quoteFresh(stock, now.Unix()) {
 			return fail("STALE_QUOTE", "该股票行动力报价已过期，等待持有人同步")
@@ -347,10 +350,13 @@ func (e *Engine) processOrders(p *Player, now time.Time) {
 			continue
 		}
 		stock := e.players[o.StockID]
-		if stock.Disabled {
+		if stock == nil || stock.Disabled || stock.Delisted {
 			o.Status = "cancelled"
 			o.Reserved = 0
 			o.Reason = "股票已停牌"
+			if stock != nil && stock.Delisted {
+				o.Reason = "股票本月已退市"
+			}
 			continue
 		}
 		if !open || !e.quoteFresh(stock, now.Unix()) || !e.triggered(o, stock.Quote.Price) {
@@ -379,18 +385,25 @@ func (e *Engine) forcedClose(p *Player, now time.Time, reason string) {
 	for _, side := range []string{"sell", "cover"} {
 		for stock, pos := range p.Positions {
 			if (side == "sell" && pos.Quantity > 0) || (side == "cover" && pos.Quantity < 0) {
-				qty := pos.Quantity
-				if qty < 0 {
-					qty = -qty
-				}
-				o := &Order{ID: e.state.NextOrder, ClientID: "system_" + symbol(e.state.NextOrder), StockID: stock, Side: side, Kind: "market", TIF: "DAY", Quantity: qty, CreatedAt: now.Unix(), Status: "pending", Reason: reason, Rules: e.state.Settings.Active}
-				e.state.NextOrder++
-				_ = e.fill(p, o, e.players[stock].Quote.Price, now, true)
-				p.Orders = append(p.Orders, o)
+				e.forcedCloseStock(p, stock, now, reason)
 			}
 		}
 	}
 	trimOrders(p)
+}
+func (e *Engine) forcedCloseStock(p *Player, stock int64, now time.Time, reason string) {
+	pos := p.Positions[stock]
+	if pos == nil || pos.Quantity == 0 {
+		return
+	}
+	qty, side := pos.Quantity, "sell"
+	if qty < 0 {
+		qty, side = -qty, "cover"
+	}
+	o := &Order{ID: e.state.NextOrder, ClientID: "system_" + symbol(e.state.NextOrder), StockID: stock, Side: side, Kind: "market", TIF: "DAY", Quantity: qty, CreatedAt: now.Unix(), Status: "pending", Reason: reason, Rules: e.state.Settings.Active}
+	e.state.NextOrder++
+	_ = e.fill(p, o, e.players[stock].Quote.Price, now, true)
+	p.Orders = append(p.Orders, o)
 }
 func (e *Engine) risk(p *Player, now time.Time) {
 	a := e.account(p, now.Unix())

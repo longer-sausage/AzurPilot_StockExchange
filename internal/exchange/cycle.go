@@ -26,11 +26,19 @@ func (e *Engine) advance(now time.Time) error {
 			p.Orders = []*Order{}
 			p.Fees = Fees{}
 			p.Realized = 0
+			p.Delisted = false
 		}
 		if now.Unix() >= current.EndsAt {
 			e.state.Season.Settled = true
 			e.archives = append(e.archives, SeasonResult{e.state.Season, e.ranks(now.Unix())})
 		}
+		// 长期离线跨月后，按新月份重新判断全部股票。
+		for _, p := range e.players {
+			e.delistIfNeeded(p, now)
+		}
+	}
+	for id := range e.delistCandidates {
+		e.delistIfNeeded(e.players[id], now)
 	}
 	return nil
 }
@@ -49,7 +57,7 @@ func (e *Engine) Tick() error {
 			needs := hasMargin(p) && !e.state.Season.Settled
 			for _, o := range p.Orders {
 				stock := e.players[o.StockID]
-				if o.Status == "pending" && (o.ExpiresAt > 0 && now.Unix() >= o.ExpiresAt || stock == nil || stock.Disabled || open && e.quoteFresh(stock, now.Unix()) && e.triggered(o, stock.Quote.Price)) {
+				if o.Status == "pending" && (o.ExpiresAt > 0 && now.Unix() >= o.ExpiresAt || stock == nil || stock.Disabled || stock.Delisted || open && e.quoteFresh(stock, now.Unix()) && e.triggered(o, stock.Quote.Price)) {
 					needs = true
 					break
 				}

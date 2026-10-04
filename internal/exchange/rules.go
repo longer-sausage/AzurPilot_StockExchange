@@ -42,6 +42,9 @@ func ValidateSettings(s Settings) error {
 	if s.InitialCash < 100 || s.InitialCash > MaxNotional {
 		return fail("INVALID_RULES", "初始资金须为 1–1,000,000,000,000 模拟币")
 	}
+	if s.DelistThreshold < 0 || s.DelistThreshold > 1_000_000 {
+		return fail("INVALID_RULES", "退市行动力阈值须为 0–1,000,000 的整数")
+	}
 	if s.StartDay < 1 || s.StartDay > 20 || s.EndDaysFromLast < 0 || s.EndDaysFromLast > 7 || len(s.Presets) == 0 || len(s.Presets) > 20 {
 		return fail("INVALID_RULES", "月赛起止或预设数量无效")
 	}

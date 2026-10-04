@@ -8,6 +8,7 @@ import (
 const InitialCash int64 = 2_000_000_000 // 默认 2 千万模拟币，所有金额以分保存。
 const MaxNotional int64 = 100_000_000_000_000
 const MaxQuotePrice int64 = 100_000_000
+const DefaultDelistThreshold int64 = 500 // 总行动力点数，低于此值时退市。
 
 // 为最坏报价、保证金、费用和强平留足 int64 算术空间，与融券库存无关。
 const LedgerSafetyLimit int64 = (1<<63 - 1) / 64
@@ -53,6 +54,7 @@ type Rules struct {
 }
 type Settings struct {
 	InitialCash     int64   `json:"initialCash"`
+	DelistThreshold int64   `json:"delistThreshold"`
 	Active          Rules   `json:"active"`
 	Presets         []Rules `json:"presets"`
 	StartDay        int     `json:"startDay"`
@@ -100,7 +102,7 @@ func DefaultSettings() Settings {
 	u.Timezone = "America/New_York"
 	u.Sessions = []string{"09:30-16:00"}
 	u.Source = "https://www.finra.org/rules-guidance/notices/21-12"
-	return Settings{InitialCash: InitialCash, Active: base, Presets: []Rules{base, a, h, u}, StartDay: 5, EndDaysFromLast: 4}
+	return Settings{InitialCash: InitialCash, DelistThreshold: DefaultDelistThreshold, Active: base, Presets: []Rules{base, a, h, u}, StartDay: 5, EndDaysFromLast: 4}
 }
 
 type Quote struct {
@@ -185,6 +187,7 @@ type Player struct {
 	Fees           Fees                `json:"fees"`
 	JoinedAt       int64               `json:"joinedAt"`
 	Disabled       bool                `json:"disabled"`
+	Delisted       bool                `json:"delisted"`
 	Binding        *InstanceBinding    `json:"binding"`
 }
 
@@ -229,9 +232,12 @@ type Stock struct {
 	Quote    Quote  `json:"quote"`
 	Stale    bool   `json:"stale"`
 	Disabled bool   `json:"disabled"`
+	Delisted bool   `json:"delisted"`
+	Open     int64  `json:"open"`
 }
 type Market struct {
 	InitialCash     int64   `json:"initialCash"`
+	DelistThreshold int64   `json:"delistThreshold"`
 	Revision        uint64  `json:"revision"`
 	ServerTime      int64   `json:"serverTime"`
 	Season          Season  `json:"season"`

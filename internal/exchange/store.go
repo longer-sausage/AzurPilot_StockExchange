@@ -13,28 +13,29 @@ import (
 )
 
 type Engine struct {
-	mu             sync.RWMutex
-	db             *sql.DB
-	clock          Clock
-	state          State
-	players        map[int64]*Player
-	names          map[string]int64
-	uploads        map[string]int64
-	watchers       map[int64]map[int64]bool
-	marginOwners   map[int64]bool
-	activePlayers  map[int64]bool
-	instances      map[string]int64
-	instanceIDs    map[string]int64
-	identityCodes  map[string]int64
-	RequireBinding bool
-	dirty          map[int64]bool
-	before         map[int64]*Player
-	histories      []historyWrite
-	trades         []Trade
-	stockVersions  map[int64]uint64
-	detailCache    map[string]detailCacheEntry
-	detailBytes    int
-	points         []struct {
+	mu               sync.RWMutex
+	db               *sql.DB
+	clock            Clock
+	state            State
+	players          map[int64]*Player
+	names            map[string]int64
+	uploads          map[string]int64
+	watchers         map[int64]map[int64]bool
+	marginOwners     map[int64]bool
+	activePlayers    map[int64]bool
+	delistCandidates map[int64]bool
+	instances        map[string]int64
+	instanceIDs      map[string]int64
+	identityCodes    map[string]int64
+	RequireBinding   bool
+	dirty            map[int64]bool
+	before           map[int64]*Player
+	histories        []historyWrite
+	trades           []Trade
+	stockVersions    map[int64]uint64
+	detailCache      map[string]detailCacheEntry
+	detailBytes      int
+	points           []struct {
 		ID    int64
 		Point QuotePoint
 	}
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS player_identity_codes (player_id INTEGER PRIMARY KEY 
 CREATE TABLE IF NOT EXISTS quotes (stock_id INTEGER NOT NULL, time INTEGER NOT NULL, price INTEGER NOT NULL, PRIMARY KEY(stock_id,time));
 CREATE TABLE IF NOT EXISTS quote_history (stock_id INTEGER NOT NULL, time INTEGER NOT NULL, price INTEGER NOT NULL, precise INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(stock_id,time));
 CREATE TABLE IF NOT EXISTS minute_prices (stock_id INTEGER NOT NULL, time INTEGER NOT NULL, open INTEGER NOT NULL, high INTEGER NOT NULL, low INTEGER NOT NULL, close INTEGER NOT NULL, first_time INTEGER NOT NULL, last_time INTEGER NOT NULL, samples INTEGER NOT NULL, PRIMARY KEY(stock_id,time));
+CREATE INDEX IF NOT EXISTS minute_prices_time_stock ON minute_prices(time,stock_id);
 CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY, stock_id INTEGER NOT NULL, username TEXT NOT NULL, side TEXT NOT NULL, kind TEXT NOT NULL, quantity INTEGER NOT NULL, price INTEGER NOT NULL, time INTEGER NOT NULL, forced INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS trades_stock_time ON trades(stock_id,time,id);
 CREATE TABLE IF NOT EXISTS history_sync (stock_id INTEGER NOT NULL, month TEXT NOT NULL, count INTEGER NOT NULL, digest TEXT NOT NULL, checked_at INTEGER NOT NULL, PRIMARY KEY(stock_id,month));
@@ -91,6 +93,7 @@ CREATE TABLE IF NOT EXISTS seasons (id TEXT PRIMARY KEY, data TEXT NOT NULL);`)
 	}
 	if raw != "" {
 		migrateFinancingRules(raw, &e.state.Settings)
+		migrateDelistThreshold(raw, &e.state.Settings)
 	}
 	if err = ValidateSettings(e.state.Settings); err != nil {
 		db.Close()
@@ -170,12 +173,16 @@ func (e *Engine) reindex() {
 	e.watchers = map[int64]map[int64]bool{}
 	e.marginOwners = map[int64]bool{}
 	e.activePlayers = map[int64]bool{}
+	e.delistCandidates = map[int64]bool{}
 	for id, p := range e.players {
 		if p.IdentityCode != "" {
 			e.identityCodes[p.IdentityCode] = id
 		}
 		if needsTick(p) {
 			e.activePlayers[id] = true
+		}
+		if e.belowDelistThreshold(p) {
+			e.delistCandidates[id] = true
 		}
 		if p.Binding != nil {
 			e.instances[p.Binding.Key] = id
@@ -248,7 +255,7 @@ func (e *Engine) transaction(fn func() error) error {
 	changedStocks := map[int64]bool{}
 	for id := range e.dirty {
 		p := e.players[id]
-		if before[id] == nil || before[id].Quote != p.Quote || before[id].Disabled != p.Disabled || before[id].Username != p.Username {
+		if before[id] == nil || before[id].Quote != p.Quote || before[id].Disabled != p.Disabled || before[id].Delisted != p.Delisted || before[id].Username != p.Username {
 			changedStocks[id] = true
 		}
 		if before[id] != nil && before[id].Username != p.Username {
@@ -355,8 +362,12 @@ func (e *Engine) transaction(fn func() error) error {
 		}
 		delete(e.marginOwners, id)
 		delete(e.activePlayers, id)
+		delete(e.delistCandidates, id)
 		if needsTick(p) {
 			e.activePlayers[id] = true
+		}
+		if e.belowDelistThreshold(p) {
+			e.delistCandidates[id] = true
 		}
 		if hasMargin(p) {
 			e.marginOwners[id] = true

@@ -605,7 +605,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	s.json(w, 200, s.engine.Settings())
 }
 func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
-	var in Settings
+	in := Settings{DelistThreshold: s.engine.Settings().DelistThreshold}
 	if err := decode(w, r, &in); err != nil {
 		s.error(w, 400, err)
 		return

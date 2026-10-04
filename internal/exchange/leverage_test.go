@@ -74,6 +74,7 @@ func TestLeveragedLongLiquidationAndSeasonReset(t *testing.T) {
 		t.Run(symbol(price), func(t *testing.T) {
 			f := setup(t)
 			s := f.e.Settings()
+			s.DelistThreshold = 0 // 此测试单独验证保证金强平，不触发行动力退市。
 			s.Active.SellDelayDays = 1
 			if err := f.e.SetSettings(s); err != nil {
 				t.Fatal(err)

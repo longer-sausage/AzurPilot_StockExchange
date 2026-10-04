@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import ExitStack, closing
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,6 +47,8 @@ with tempfile.TemporaryDirectory() as directory, ExitStack() as protection:
     with closing(sqlite3.connect(workspace / 'config' / 'cl1_data.db')) as stats, stats:
         stats.execute('CREATE TABLE cl1_data(instance TEXT,month TEXT,data_json TEXT,encrypted_blob BLOB,PRIMARY KEY(instance,month))')
         stats.execute('INSERT INTO cl1_data VALUES(?,?,?,NULL)', ('test', now.strftime('%Y-%m'), json.dumps({'ap_snapshots': historical})))
+        previous = (start - timedelta(days=1)).strftime('%Y-%m')
+        stats.execute('INSERT INTO cl1_data VALUES(?,?,NULL,?)', ('test', previous, b'unreadable-old-ciphertext'))
     env = {**os.environ, 'MOCK_MODE': 'true', 'LISTEN_ADDR': f'127.0.0.1:{port}', 'DATABASE_PATH': str(workspace / 'exchange.db'), 'FRONTEND_DIR': str(root / 'frontend' / 'dist')}
     process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     service = reloaded = None
@@ -67,6 +69,7 @@ with tempfile.TemporaryDirectory() as directory, ExitStack() as protection:
         assert reply['status'] == 201, reply
         assert reply['data']['token'] == 'instance-session' and 'uploadToken' not in reply['data']
         assert service.status('test')['bound'] and service.status('test')['authenticated']
+        assert '旧统计' not in service.status('test')['message']
         account = service.request('test', '/account')['data']
         assert account['player']['quote']['price'] == 120000
         expected = {history_point(point['ap_total'], point['ts'])[0]: point['ap_total'] for point in historical}
@@ -83,6 +86,10 @@ with tempfile.TemporaryDirectory() as directory, ExitStack() as protection:
         assert sum(bar['samples'] for bar in detail['bars']) == len(expected)
         first_day = service.request('test', f"/stocks/{stock_id}?period=time&month={now:%Y-%m}&day={now:%Y-%m}-01")['data']
         assert first_day['bars'] and first_day['bars'][0]['open'] == historical[0]['ap_total'] * 100
+        previous_detail = service.request('test', f'/stocks/{stock_id}?period=day&month={previous}')['data']
+        assert previous_detail['coverage']['count'] == 0, previous_detail['coverage']
+        with closing(sqlite3.connect(workspace / 'config' / 'cl1_data.db')) as stats:
+            assert stats.execute('SELECT encrypted_blob FROM cl1_data WHERE instance=? AND month=?', ('test', previous)).fetchone()[0] == b'unreadable-old-ciphertext'
         other = service.request('other', '/login', 'POST', {k: v for k, v in body.items() if k != 'acceptedNotice'})
         assert other['status'] == 403 and other['data']['error']['code'] == 'INSTANCE_MISMATCH', other
         time.sleep(16)
@@ -100,7 +107,7 @@ with tempfile.TemporaryDirectory() as directory, ExitStack() as protection:
         assert not reloaded.status('test')['authenticated']
         logged = reloaded.request('test', '/login', 'POST', {k: v for k, v in body.items() if k != 'acceptedNotice'})
         assert logged['status'] == 200, logged
-        print('Python 原生代理 → Go：新开户整月 3001 条注册前历史补传、日 K / 月初分时查询、摘要校对、实例隔离、实时同步、退出与重启绑定恢复全部通过')
+        print('Python 原生代理 → Go：跳过且保留无法读取的旧月份、当月 3001 条注册前历史补传、日 K / 月初分时、摘要校对、实例隔离、实时同步与重启全部通过')
     finally:
         if service:
             service.close()

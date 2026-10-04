@@ -20,6 +20,7 @@ type AdminPlayerSummary struct {
 	Available     int64  `json:"available"`
 	JoinedAt      int64  `json:"joinedAt"`
 	Disabled      bool   `json:"disabled"`
+	Delisted      bool   `json:"delisted"`
 	Stale         bool   `json:"stale"`
 	InstanceID    string `json:"instanceId"`
 	Positions     int    `json:"positionCount"`
@@ -69,7 +70,7 @@ func (e *Engine) AdminPlayers(query, status string, page, pageSize int) AdminPla
 	for _, id := range ids[start:min(start+pageSize, len(ids))] {
 		p := e.players[id]
 		a := e.account(p, now)
-		v := AdminPlayerSummary{ID: id, Symbol: symbol(id), Username: p.Username, IdentityCode: p.IdentityCode, Cash: p.Cash, Equity: a.Equity, Available: a.Available, JoinedAt: p.JoinedAt, Disabled: p.Disabled, Stale: !e.quoteFresh(p, now), Positions: len(p.Positions), Quote: p.Quote}
+		v := AdminPlayerSummary{ID: id, Symbol: symbol(id), Username: p.Username, IdentityCode: p.IdentityCode, Cash: p.Cash, Equity: a.Equity, Available: a.Available, JoinedAt: p.JoinedAt, Disabled: p.Disabled, Delisted: p.Delisted, Stale: !e.quoteFresh(p, now), Positions: len(p.Positions), Quote: p.Quote}
 		if p.Binding != nil {
 			v.InstanceID = p.Binding.InstanceID
 		}
@@ -158,6 +159,7 @@ func (e *Engine) UpdatePlayer(id int64, in AdminPlayerUpdate) (Account, error) {
 		if in.Disabled != nil && p.Disabled != *in.Disabled {
 			e.disablePlayer(p, *in.Disabled, now)
 		}
+		e.delistIfNeeded(p, now)
 		result = e.account(clonePlayer(p), now.Unix())
 		return nil
 	})

@@ -13,7 +13,7 @@ func benchmarkIdleEngine(b *testing.B, count int) *Engine {
 	e.state.Settings = DefaultSettings()
 	e.state.Season = seasonFor(now, e.state.Settings)
 	for id := int64(1); id <= int64(count); id++ {
-		e.players[id] = &Player{ID: id, Username: fmt.Sprint(id), Cash: InitialCash, Positions: map[int64]*Position{}}
+		e.players[id] = &Player{ID: id, Username: fmt.Sprint(id), Cash: InitialCash, Quote: Quote{Price: 100000}, Positions: map[int64]*Position{}}
 	}
 	e.reindex()
 	return e

@@ -113,6 +113,7 @@ func (e *Engine) IngestHistory(token string, r HistoryReport, binding *InstanceB
 		if err := e.advance(now); err != nil {
 			return err
 		}
+		p = e.players[id]
 		e.histories = append(e.histories, historyWrite{ID: id, Report: r})
 		if len(r.Points) > 0 {
 			last := r.Points[len(r.Points)-1]
@@ -127,7 +128,8 @@ func (e *Engine) IngestHistory(token string, r HistoryReport, binding *InstanceB
 					e.accrue(e.touch(holder), now.Unix())
 				}
 				p = e.touch(id)
-				p.Quote = Quote{last.ActionPoints * 100, p.Quote.Price, observed, now.Unix()}
+				p.Quote = Quote{Price: last.ActionPoints * 100, Previous: p.Quote.Price, ObservedAt: observed, UploadedAt: now.Unix()}
+				e.delistIfNeeded(p, now)
 				for holder := range e.watchers[id] {
 					p := e.touch(holder)
 					e.risk(p, now)

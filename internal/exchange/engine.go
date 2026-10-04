@@ -103,6 +103,7 @@ func (e *Engine) Register(username, password string, ap, observed int64, binding
 			ID    int64
 			Point QuotePoint
 		}{id, QuotePoint{observed, ap * 100}})
+		e.delistIfNeeded(p, time.Unix(now, 0))
 		result = clonePlayer(p)
 		return nil
 	})
@@ -216,6 +217,7 @@ func (e *Engine) Upload(token string, ap, observed int64, bindings ...*InstanceB
 			ID    int64
 			Point QuotePoint
 		}{id, QuotePoint{observed, ap * 100}})
+		e.delistIfNeeded(p, now)
 		for holder := range e.watchers[id] {
 			p := e.touch(holder)
 			e.risk(p, now)
@@ -353,16 +355,20 @@ func (e *Engine) MarketJSON() ([]byte, string, error) {
 	}
 	e.cacheUntil = int64(1<<63 - 1)
 	open, reason := e.isOpen(now)
+	opening, err := e.openingPrices(now, 0)
+	if err != nil {
+		return nil, "", err
+	}
 	stocks := make([]Stock, 0, len(e.players))
 	for _, p := range e.players {
-		stocks = append(stocks, Stock{p.ID, symbol(p.ID), p.Username, p.Quote, !e.quoteFresh(p, now.Unix()), p.Disabled})
+		stocks = append(stocks, e.marketStock(p, opening[p.ID], now))
 		deadline := p.Quote.ObservedAt + e.state.Settings.Active.QuoteTTLSeconds + 1
 		if deadline > now.Unix() && deadline < e.cacheUntil {
 			e.cacheUntil = deadline
 		}
 	}
 	sort.Slice(stocks, func(i, j int) bool { return stocks[i].ID < stocks[j].ID })
-	m := Market{InitialCash: e.state.Settings.InitialCash, Revision: e.state.Revision, ServerTime: now.Unix(), Season: e.state.Season, Rules: e.state.Settings.Active, Open: open, Reason: reason, Stocks: stocks, Rankings: e.ranks(now.Unix()), LifetimeRevenue: e.state.LifetimeRevenue, Participants: len(e.players)}
+	m := Market{InitialCash: e.state.Settings.InitialCash, DelistThreshold: e.state.Settings.DelistThreshold, Revision: e.state.Revision, ServerTime: now.Unix(), Season: e.state.Season, Rules: e.state.Settings.Active, Open: open, Reason: reason, Stocks: stocks, Rankings: e.ranks(now.Unix()), LifetimeRevenue: e.state.LifetimeRevenue, Participants: len(e.players)}
 	b, err := json.Marshal(m)
 	e.cache = b
 	e.cacheRevision = e.state.Revision
@@ -400,6 +406,7 @@ func (e *Engine) SetSettings(s Settings) error {
 		e.state.Settings = s
 		for id := range e.players {
 			p := e.touch(id)
+			e.delistIfNeeded(p, now)
 			e.risk(p, now)
 		}
 		return nil

@@ -84,6 +84,39 @@ type detailCacheEntry struct {
 
 const detailCacheLimit = 8 * 1024 * 1024
 
+// 当日第一条行动力报价作为开盘价，迟到补传或修正后直接读取最新聚合。
+func (e *Engine) openingPrices(now time.Time, id int64) (map[int64]int64, error) {
+	zone, _ := loadLocation("Asia/Shanghai")
+	day := now.In(zone)
+	from := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, zone)
+	query := `SELECT m.stock_id,m.open FROM minute_prices m JOIN
+ (SELECT stock_id,MIN(time) AS first FROM minute_prices WHERE time>=? AND time<?`
+	args := []any{from.UnixMilli(), from.AddDate(0, 0, 1).UnixMilli()}
+	if id > 0 {
+		query += " AND stock_id=?"
+		args = append(args, id)
+	}
+	query += ` GROUP BY stock_id) d ON m.stock_id=d.stock_id AND m.time=d.first`
+	rows, err := e.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	prices := map[int64]int64{}
+	for rows.Next() {
+		var stock, price int64
+		if err := rows.Scan(&stock, &price); err != nil {
+			return nil, err
+		}
+		prices[stock] = price
+	}
+	return prices, rows.Err()
+}
+
+func (e *Engine) marketStock(p *Player, open int64, now time.Time) Stock {
+	return Stock{ID: p.ID, Symbol: symbol(p.ID), Username: p.Username, Quote: p.Quote, Stale: !e.quoteFresh(p, now.Unix()), Disabled: p.Disabled, Delisted: p.Delisted, Open: open}
+}
+
 func periodBucket(period string) (string, error) {
 	if period == "day" {
 		return "(time+28800000)/86400000*86400000-28800000", nil
@@ -244,7 +277,11 @@ func (e *Engine) StockDetailJSON(id int64, period, month, day string) ([]byte, s
 	if strings.HasPrefix(period, "m") {
 		chartFrom = from - 2*86400000
 	}
-	stock := Stock{p.ID, symbol(p.ID), p.Username, p.Quote, !e.quoteFresh(p, now.Unix()), p.Disabled}
+	opening, err := e.openingPrices(now, id)
+	if err != nil {
+		return nil, "", err
+	}
+	stock := e.marketStock(p, opening[id], now)
 	out := StockDetail{Stock: stock, Period: period, Month: month, Day: day, DisplayFrom: displayFrom, Trades: []Trade{}, Pending: []PublicPending{}}
 	out.Bars, err = e.candles(id, chartFrom, chartTo, period)
 	if err != nil {

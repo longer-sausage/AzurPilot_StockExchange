@@ -22,8 +22,11 @@ type fixture struct {
 }
 
 func setup(t *testing.T) *fixture {
+	return setupAt(t, time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC))
+}
+func setupAt(t *testing.T, now time.Time) *fixture {
 	t.Helper()
-	f := &fixture{now: time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC), path: filepath.Join(t.TempDir(), "test.db")}
+	f := &fixture{now: now, path: filepath.Join(t.TempDir(), "test.db")}
 	var err error
 	f.e, err = Open(f.path, func() time.Time { return f.now })
 	if err != nil {
@@ -477,6 +480,11 @@ func TestLateJoinDoesNotChangeClosedSeasonRanking(t *testing.T) {
 }
 func TestUnlimitedBorrowInventoryAndIntegerSafety(t *testing.T) {
 	f := setup(t)
+	s := f.e.Settings()
+	s.DelistThreshold = 0 // 此测试仅验证低价下的融券数量与整数安全边界。
+	if err := f.e.SetSettings(s); err != nil {
+		t.Fatal(err)
+	}
 	f.now = f.now.Add(time.Minute)
 	if err := f.e.Upload(f.upload, 1, f.now.Unix()); err != nil {
 		t.Fatal(err)
@@ -515,7 +523,12 @@ func TestUnlimitedBorrowInventoryAndIntegerSafety(t *testing.T) {
 func BenchmarkMarketCache1000Players(b *testing.B) {
 	now := time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC)
 	settings := DefaultSettings()
-	e := &Engine{clock: func() time.Time { return now }, state: State{Settings: settings, Season: seasonFor(now, settings), Revision: 1}, players: map[int64]*Player{}, marginOwners: map[int64]bool{}}
+	e, err := Open(filepath.Join(b.TempDir(), "benchmark.db"), func() time.Time { return now })
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { e.Close() })
+	e.state = State{Settings: settings, Season: seasonFor(now, settings), Revision: 1}
 	for i := int64(1); i <= 1000; i++ {
 		e.players[i] = &Player{ID: i, Username: fmt.Sprintf("玩家%d", i), Cash: InitialCash, Quote: Quote{Price: 100000, Previous: 100000, ObservedAt: now.Unix()}, Positions: map[int64]*Position{}, Orders: []*Order{}}
 	}
