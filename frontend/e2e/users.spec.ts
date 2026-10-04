@@ -1,4 +1,5 @@
 import {expect,test} from '@playwright/test'
+import {completeCaptcha} from './recaptcha'
 import {generateKeyPairSync,randomUUID,sign} from 'node:crypto'
 
 test('用户管理查询、详情、编辑、资金校验、密码重设和停用恢复',async({page})=>{
@@ -7,14 +8,14 @@ test('用户管理查询、详情、编辑、资金校验、密码重设和停�
   const {publicKey,privateKey}=generateKeyPairSync('ed25519'),instanceId=randomUUID(),pub=publicKey.export({format:'der',type:'spki'}).subarray(-32).toString('base64')
   const report=()=>{const now=Math.floor(Date.now()/1000),value={instanceId,publicKey:pub,actionPoints:1234,observedAt:now,issuedAt:now};return {...value,signature:sign(null,Buffer.from(`mmex-instance-v1\n${instanceId}\n${pub}\n1234\n${now}\n${now}\n`),privateKey).toString('base64')}}
   const name=`管理测试${Date.now()}`
-  const registered=await page.request.post('/api/register',{data:{username:name,password:'test-player-password',acceptedNotice:'2026-10-03',turnstileToken:'XXXX.DUMMY.TOKEN.XXXX',report:report()}})
+  const registered=await page.request.post('/api/register',{data:{username:name,password:'test-player-password',acceptedNotice:'2026-10-03',recaptchaToken:'recaptcha-test-token',report:report()}})
   expect(registered.ok()).toBeTruthy();const original=await registered.json(),identityCode=original.player.identityCode
   expect(identityCode).toMatch(/^MMEX-(?:[A-F0-9]{8}-){3}[A-F0-9]{8}$/)
   const headers={Authorization:`Bearer ${original.token}`,'X-MMEX-Instance':original.player.binding.key}
   expect((await page.request.post('/api/orders',{headers,data:{clientId:`buy_${Date.now()}`,stockId:1,side:'buy',kind:'market',tif:'GTC',quantity:10,limit:0}})).ok()).toBeTruthy()
   expect((await page.request.post('/api/orders',{headers,data:{clientId:`pending_${Date.now()}`,stockId:1,side:'buy',kind:'limit',tif:'GTC',quantity:10,limit:100}})).ok()).toBeTruthy()
   await page.goto('/console');await page.getByLabel('管理员密码').fill('mock-admin-password')
-  await expect(page.locator('input[name="cf-turnstile-response"]')).toHaveValue('XXXX.DUMMY.TOKEN.XXXX',{timeout:20000})
+  await completeCaptcha(page)
   const adminLogin=page.waitForResponse(r=>r.url().endsWith('/api/console/login'))
   await page.getByRole('button',{name:'验证并登录控制台'}).click();const adminResponse=await adminLogin
   if(!adminResponse.ok())throw new Error((await adminResponse.json()).error.message)
@@ -37,7 +38,7 @@ test('用户管理查询、详情、编辑、资金校验、密码重设和停�
   await detail.getByLabel('重设用户密码').fill('new-player-password');await detail.getByLabel('确认用户新密码').fill('wrong-password');await detail.getByRole('button',{name:'保存用户信息'}).click();await expect(detail.getByRole('alert')).toContainText('两次输入的新密码不一致')
   await detail.getByLabel('确认用户新密码').fill('new-player-password');await detail.getByRole('button',{name:'保存用户信息'}).click();await expect(detail.getByRole('status')).toContainText('旧会话已失效')
   expect((await page.request.get('/api/account',{headers})).status()).toBe(401)
-  const login=await page.request.post('/api/login',{data:{username:newName,password:'new-player-password',turnstileToken:'XXXX.DUMMY.TOKEN.XXXX',report:report()}});expect(login.ok()).toBeTruthy();const logged=await login.json();expect(logged.player.identityCode).toBe(identityCode)
+  const login=await page.request.post('/api/login',{data:{username:newName,password:'new-player-password',recaptchaToken:'recaptcha-test-token',report:report()}});expect(login.ok()).toBeTruthy();const logged=await login.json();expect(logged.player.identityCode).toBe(identityCode)
   await detail.getByLabel('用户账户状态').selectOption('disabled');await expect(detail.getByRole('button',{name:'保存用户信息'})).toBeDisabled();await detail.getByRole('checkbox',{name:/确认停用/}).check();await detail.getByRole('button',{name:'保存用户信息'}).click();await expect(detail.getByRole('status')).toContainText('已平仓本人持仓')
   await page.getByLabel('筛选账户状态').selectOption('disabled');await expect(page.locator('.user-table tbody tr').filter({hasText:newName})).toContainText('已停用')
   const adminToken=await page.evaluate(()=>sessionStorage.getItem('mmex.admin'))

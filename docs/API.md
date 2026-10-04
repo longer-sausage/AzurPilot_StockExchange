@@ -52,7 +52,7 @@
 {
   "username": "指挥官猫",
   "password": "至少十位的安全密码",
-  "turnstileToken": "由 register action 的 Turnstile widget 生成",
+  "recaptchaToken": "由当前表单的 reCAPTCHA v2 widget 生成",
   "acceptedNotice": "2026-10-03",
   "report": {
     "instanceId": "当前实例持久 UUID",
@@ -65,11 +65,11 @@
 }
 ```
 
-示例时间须替换为当前游戏记录时间。用户名归一后 2–20 字符，密码 10–72 字节。noticeVersion 从 `/api/meta` 获取。公开 site key `0x4AAAAAAFMCQstp3hgd939a` 硬编码在玩家和管理前端，服务端只读取私密 `TURNSTILE_SECRET_KEY`，不提供 site key 配置或元数据字段。登录提交 `username`、`password`、`turnstileToken` 和同一实例签名的 `report`，widget action 为 `login`；管理员 action 为 `console-login`。注册使用 `register`。生产每次都调用 Cloudflare Siteverify，检查 success、hostname、action，失败不创建账户/会话。验证 token 一次使用，错误后重新挑战。
+示例时间须替换为当前游戏记录时间。用户名归一后 2–20 字符，密码 10–72 字节。noticeVersion 从 `/api/meta` 获取。公开 site key `6Ldu7N4tAAAAABEvkf8KUza3x6rxHGLm1dP5gpMq` 固定在玩家和管理前端，服务端只读取私密 `RECAPTCHA_SECRET_KEY`，不提供 site key 配置或元数据字段。登录提交 `username`、`password`、`recaptchaToken` 和同一实例签名的 `report`；管理员提交 `password`、`recaptchaToken`。三个认证入口每次均 POST 到 `https://www.recaptcha.net/recaptcha/api/siteverify` 校验 success，不以本地 token 直接放行。控制台已停用域名验证，服务端不匹配 hostname；当前 v2 复选框不发送 action，不作用途匹配。token 有效期为两分钟且只能验证一次，缺失、无效、过期或重复使用时不创建账户/会话。切换注册/登录立即清空 token，每次提交后重新挑战，忽略旧组件回调。
 
 注册响应 `{"token":"...","uploadToken":"...","player":{...}}`，登录响应不返回原上传凭据；遗失时由已登录玩家轮换。所有私有哈希都从公开 JSON 中排除。AzurPilot 后端保存真实会话和上传凭据，浏览器只收到 `token: "instance-session"` 标记。登录旧的未绑定账户时只允许首次绑定；之后不能换绑，退出登录不解除绑定。
 
-Mock 也使用 Cloudflare 官方测试组件与 Siteverify：前端测试 site key 为 `1x00000000000000000000AA`，Go 仅在回环监听的 Mock 模式选择官方测试 secret。必须提交 `XXXX.DUMMY.TOKEN.XXXX` 并获得服务端验证成功，不在本地直接放行；测试响应没有实际页面 hostname/action，Mock 不匹配这两个字段，生产继续严格匹配并拒绝使用官方测试 secret。单元测试以本机 HTTP 夹具替代外部网络，演示与浏览器联调使用真实 Cloudflare 测试接口。
+Mock 也使用 Google reCAPTCHA v2 官方测试组件与 `www.recaptcha.net` Siteverify：公开测试 site key 为 `6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI`，Go 仅在回环监听的 Mock 模式选择官方测试 secret。测试组件需点击复选框，响应 token 不使用固定字符串；Google 官方测试 secret 免图片挑战。Mock 也必须得到上游验证成功，生产拒绝官方测试 secret。单元测试以本机 HTTP 夹具替代外部网络，浏览器联调使用真实 Google 测试接口。网络或密钥配置错误返回 `CAPTCHA_UNAVAILABLE`，无效或重复 token 返回 `CAPTCHA_FAILED`。
 
 ## 委托与报价
 

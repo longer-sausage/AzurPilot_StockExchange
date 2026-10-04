@@ -297,12 +297,12 @@ func TestCaptchaRequiredForRegisterAndLoginAndAdmin(t *testing.T) {
 		c := Config{Mock: mock, Domain: "stock.nanoda.work", SessionSecret: strings.Repeat("s", 32), AdminPassword: "test-admin-password", Origins: []string{"http://127.0.0.1:*"}}
 		s := NewServer(f.e, c)
 		for _, path := range []string{"/api/register", "/api/login", "/api/console/login"} {
-			body := `{"username":"交易猫猫","password":"test-password-123","turnstileToken":""}`
+			body := `{"username":"交易猫猫","password":"test-password-123","recaptchaToken":""}`
 			if path == "/api/register" {
-				body = `{"username":"新猫","password":"test-password-123","turnstileToken":"","acceptedNotice":"2026-10-03"}`
+				body = `{"username":"新猫","password":"test-password-123","recaptchaToken":"","acceptedNotice":"2026-10-03"}`
 			}
 			if path == "/api/console/login" {
-				body = `{"password":"test-admin-password","turnstileToken":""}`
+				body = `{"password":"test-admin-password","recaptchaToken":""}`
 			}
 			w := httptest.NewRecorder()
 			s.ServeHTTP(w, httptest.NewRequest("POST", path, strings.NewReader(body)))
@@ -319,38 +319,33 @@ func TestCaptchaRequiredForRegisterAndLoginAndAdmin(t *testing.T) {
 		}
 	}
 }
-func TestRealCaptchaHostnameActionAndFailure(t *testing.T) {
+func TestRecaptchaDoesNotMatchHostnameOrAction(t *testing.T) {
 	f := setup(t)
-	c := Config{SecretKey: "secret", Hostnames: []string{"stock.nanoda.work"}}
-	s := NewServer(f.e, c)
-	payload := turnstileResult{true, "stock.nanoda.work", "register"}
+	s := NewServer(f.e, Config{SecretKey: "secret"})
+	payload := map[string]any{"success": true, "hostname": "any-pilot.example", "action": "register"}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.ParseForm()
-		if r.Form.Get("secret") != "secret" {
-			t.Error("未提交密钥")
+		if err := r.ParseForm(); err != nil {
+			t.Error(err)
 		}
-		json.NewEncoder(w).Encode(payload)
+		if r.Form.Get("secret") != "secret" || r.Form.Get("response") != "token" {
+			t.Error("未提交私密密钥与验证码 token")
+		}
+		_ = json.NewEncoder(w).Encode(payload)
 	}))
 	defer ts.Close()
 	s.SiteverifyURL = ts.URL
-	if err := s.verify(t.Context(), "token", "register"); err != nil {
-		t.Fatal(err)
+	if err := s.verify(t.Context(), "token"); err != nil {
+		t.Fatal("停用域名验证后不得拒绝任意 hostname 或遗留 action", err)
 	}
-	payload.Action = "login"
-	if err := s.verify(t.Context(), "token", "register"); err == nil {
-		t.Fatal("未校验用途")
+	delete(payload, "hostname")
+	delete(payload, "action")
+	if err := s.verify(t.Context(), "token"); err != nil {
+		t.Fatal("未发送 action，仍应接受验证成功的响应", err)
 	}
-	payload.Action = "register"
-	payload.Hostname = "evil.test"
-	if err := s.verify(t.Context(), "token", "register"); err == nil {
-		t.Fatal("未校验来源")
-	}
-	payload.Hostname = "stock.nanoda.work"
-	payload.Success = false
-	if err := s.verify(t.Context(), "token", "register"); err == nil {
-		t.Fatal("验证失败仍接受")
-	}
+	payload["success"] = false
+	requireCode(t, s.verify(t.Context(), "token"), "CAPTCHA_FAILED")
 }
+
 func TestConditionalMarketAndDiskFailure(t *testing.T) {
 	f := setup(t)
 	s := NewServer(f.e, Config{Origins: []string{}})

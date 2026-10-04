@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory() as directory, ExitStack() as protection:
             raise AssertionError('隔离 Mock Go 服务未就绪')
         service = StockExchangeService(configs)
         service.start = Mock()
-        body = {'username': '隔离实例验收', 'password': 'smoke-test-password', 'acceptedNotice': '2026-10-03', 'turnstileToken': 'XXXX.DUMMY.TOKEN.XXXX'}
+        body = {'username': '隔离实例验收', 'password': 'smoke-test-password', 'acceptedNotice': '2026-10-03', 'recaptchaToken': 'recaptcha-test-token'}
         reply = service.request('test', '/register', 'POST', body)
         assert reply['status'] == 201, reply
         assert reply['data']['token'] == 'instance-session' and 'uploadToken' not in reply['data']

@@ -15,7 +15,7 @@ func TestAuthenticationUsesAvailableCPUWithoutQueueing(t *testing.T) {
 	s := NewServer(f.e, Config{Mock: true})
 	stubTestCaptcha(t, s)
 	identity := newTestIdentity(t)
-	body, _ := json.Marshal(map[string]any{"username": "并发准入猫", "password": "test-password-123", "acceptedNotice": "2026-10-03", "turnstileToken": turnstileTestToken, "report": identity.report(f.now, 1000, f.now.Unix())})
+	body, _ := json.Marshal(map[string]any{"username": "并发准入猫", "password": "test-password-123", "acceptedNotice": "2026-10-03", "recaptchaToken": recaptchaTestToken, "report": identity.report(f.now, 1000, f.now.Unix())})
 	if cap(s.Slots) != 4 || cap(s.passwordSlots) != 1 {
 		t.Fatal("网络等待与密码计算应按 CPU 分别准入")
 	}

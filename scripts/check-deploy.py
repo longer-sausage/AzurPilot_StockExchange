@@ -31,7 +31,7 @@ def main():
         stage = script[:script.index('BUILD_DIR=')]
         stage = stage.replace('umask 077', 'umask 077\napt-get() { :; }', 1)
         (fixture / 'validate.sh').write_text(stage+'\necho CERTIFICATE_VALIDATED\n', encoding='utf-8', newline='\n')
-        values = dict(EXCHANGE_DOMAIN='stock.nanoda.work', TURNSTILE_SECRET_KEY='test-private-key',
+        values = dict(EXCHANGE_DOMAIN='stock.nanoda.work', RECAPTCHA_SECRET_KEY='test-private-key',
                       ADMIN_PASSWORD='deployment-test-password', SESSION_SECRET='s'*32,
                       TLS_CERT_FILE='/fixture/cert.pem', TLS_KEY_FILE='/fixture/key.pem')
         cases = [

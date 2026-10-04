@@ -24,17 +24,12 @@ import (
 
 type Config struct {
 	Domain, Listen, Database, Frontend, SecretKey, AdminPassword, SessionSecret string
-	Hostnames, Origins                                                          []string
+	Origins                                                                     []string
 	Mock                                                                        bool
 }
 
-// Cloudflare 官方测试凭据只用于本机 Mock，测试 token 仍须请求 Siteverify。
-const turnstileTestSecret = "1x0000000000000000000000000000000AA"
-const turnstileTestToken = "XXXX.DUMMY.TOKEN.XXXX"
-
-func isTurnstileTestSecret(secret string) bool {
-	return secret == turnstileTestSecret || secret == "2x0000000000000000000000000000000AA" || secret == "3x0000000000000000000000000000000AA"
-}
+// Google 官方测试凭据只用于本机 Mock，测试 token 仍须请求 Siteverify。
+const recaptchaTestSecret = "6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe"
 
 func LoadConfig() (Config, error) {
 	get := func(k, d string) string {
@@ -43,7 +38,7 @@ func LoadConfig() (Config, error) {
 		}
 		return d
 	}
-	c := Config{Domain: get("EXCHANGE_DOMAIN", "stock.nanoda.work"), Listen: get("LISTEN_ADDR", "127.0.0.1:8080"), Database: get("DATABASE_PATH", "data/exchange.db"), Frontend: get("FRONTEND_DIR", "frontend/dist"), SecretKey: os.Getenv("TURNSTILE_SECRET_KEY"), AdminPassword: os.Getenv("ADMIN_PASSWORD"), SessionSecret: os.Getenv("SESSION_SECRET"), Mock: os.Getenv("MOCK_MODE") == "true", Origins: strings.Split(get("ALLOWED_ORIGINS", "http://localhost:*,http://127.0.0.1:*"), ","), Hostnames: strings.Split(get("TURNSTILE_HOSTNAMES", get("EXCHANGE_DOMAIN", "stock.nanoda.work")), ",")}
+	c := Config{Domain: get("EXCHANGE_DOMAIN", "stock.nanoda.work"), Listen: get("LISTEN_ADDR", "127.0.0.1:8080"), Database: get("DATABASE_PATH", "data/exchange.db"), Frontend: get("FRONTEND_DIR", "frontend/dist"), SecretKey: strings.TrimSpace(os.Getenv("RECAPTCHA_SECRET_KEY")), AdminPassword: os.Getenv("ADMIN_PASSWORD"), SessionSecret: os.Getenv("SESSION_SECRET"), Mock: os.Getenv("MOCK_MODE") == "true", Origins: strings.Split(get("ALLOWED_ORIGINS", "http://localhost:*,http://127.0.0.1:*"), ",")}
 	if c.Mock {
 		host, _, err := net.SplitHostPort(c.Listen)
 		if err != nil || host != "127.0.0.1" && host != "localhost" && host != "::1" {
@@ -59,8 +54,8 @@ func LoadConfig() (Config, error) {
 	if len(c.AdminPassword) < 12 || len(c.SessionSecret) < 32 {
 		return c, fmt.Errorf("ADMIN_PASSWORD 至少 12 字符，SESSION_SECRET 至少 32 字符")
 	}
-	if !c.Mock && (c.SecretKey == "" || isTurnstileTestSecret(c.SecretKey) || strings.HasPrefix(c.SecretKey, "replace-") || strings.HasPrefix(c.AdminPassword, "replace-") || strings.HasPrefix(c.SessionSecret, "replace-")) {
-		return c, fmt.Errorf("请配置真实 Turnstile 密钥、管理员密码和会话密钥")
+	if !c.Mock && (c.SecretKey == "" || c.SecretKey == recaptchaTestSecret || strings.HasPrefix(c.SecretKey, "replace-") || strings.HasPrefix(c.AdminPassword, "replace-") || strings.HasPrefix(c.SessionSecret, "replace-")) {
+		return c, fmt.Errorf("请配置真实 RECAPTCHA_SECRET_KEY、管理员密码和会话密钥")
 	}
 	if strings.ContainsAny(c.Domain, "/\r\n \t;") {
 		return c, fmt.Errorf("EXCHANGE_DOMAIN 无效")
@@ -68,10 +63,9 @@ func LoadConfig() (Config, error) {
 	return c, nil
 }
 
-type turnstileResult struct {
-	Success  bool   `json:"success"`
-	Hostname string `json:"hostname"`
-	Action   string `json:"action"`
+type recaptchaResult struct {
+	Success    bool     `json:"success"`
+	ErrorCodes []string `json:"error-codes"`
 }
 type session struct {
 	ID      int64  `json:"id"`
@@ -104,7 +98,7 @@ func NewServer(e *Engine, c Config) *Server {
 	verifySlots := max(4, cpus*2)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.MaxConnsPerHost = verifySlots, verifySlots, verifySlots
-	s := &Server{engine: e, config: c, client: &http.Client{Timeout: 8 * time.Second, Transport: transport}, limits: map[string]*limitEntry{}, mux: http.NewServeMux(), Slots: make(chan struct{}, verifySlots), passwordSlots: make(chan struct{}, cpus), SiteverifyURL: "https://challenges.cloudflare.com/turnstile/v0/siteverify"}
+	s := &Server{engine: e, config: c, client: &http.Client{Timeout: 8 * time.Second, Transport: transport}, limits: map[string]*limitEntry{}, mux: http.NewServeMux(), Slots: make(chan struct{}, verifySlots), passwordSlots: make(chan struct{}, cpus), SiteverifyURL: "https://www.recaptcha.net/recaptcha/api/siteverify"}
 	e.RequireBinding = true
 	s.mux.HandleFunc("GET /api/meta", s.meta)
 	s.mux.HandleFunc("POST /api/register", s.register)
@@ -162,7 +156,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ancestors = append(ancestors, strings.TrimSpace(v))
 		}
 	}
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; connect-src 'self' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors "+strings.Join(ancestors, " "))
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://www.recaptcha.net/recaptcha/ https://www.gstatic.com/recaptcha/; frame-src https://www.recaptcha.net/recaptcha/; connect-src 'self' https://www.recaptcha.net/recaptcha/; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors "+strings.Join(ancestors, " "))
 	if origin := r.Header.Get("Origin"); origin != "" {
 		if !s.allowed(origin) {
 			s.error(w, 403, fail("ORIGIN_DENIED", "访问来源未授权"))
@@ -255,16 +249,14 @@ func decode(w http.ResponseWriter, r *http.Request, v any) error {
 	}
 	return nil
 }
-func (s *Server) verify(ctx context.Context, token, action string) error {
-	if token == "" || len(token) > 2048 {
-		return fail("CAPTCHA_REQUIRED", "请完成 Cloudflare 验证码")
+func (s *Server) verify(ctx context.Context, token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" || len(token) > 16384 {
+		return fail("CAPTCHA_REQUIRED", "请完成 reCAPTCHA 人机验证")
 	}
 	secret := s.config.SecretKey
 	if s.config.Mock {
-		if token != turnstileTestToken {
-			return fail("CAPTCHA_FAILED", "请完成 Cloudflare 测试验证码")
-		}
-		secret = turnstileTestSecret
+		secret = recaptchaTestSecret
 	}
 	data := url.Values{"secret": {secret}, "response": {token}}
 	req, err := http.NewRequestWithContext(ctx, "POST", s.SiteverifyURL, strings.NewReader(data.Encode()))
@@ -277,23 +269,19 @@ func (s *Server) verify(ctx context.Context, token, action string) error {
 		return fail("CAPTCHA_UNAVAILABLE", "验证码服务暂不可用，请重新验证")
 	}
 	defer res.Body.Close()
-	var result turnstileResult
-	if res.StatusCode != 200 || json.NewDecoder(io.LimitReader(res.Body, 16384)).Decode(&result) != nil || !result.Success {
-		return fail("CAPTCHA_FAILED", "验证码无效或已过期，请重新验证")
+	var result recaptchaResult
+	if res.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(res.Body, 16384)).Decode(&result) != nil {
+		return fail("CAPTCHA_UNAVAILABLE", "验证码服务暂不可用，请重新验证")
 	}
-	// 官方测试响应的 hostname/action 是固定测试值，不能按实际页面匹配。
-	if s.config.Mock {
-		return nil
-	}
-	validHost := false
-	for _, h := range s.config.Hostnames {
-		if result.Hostname == strings.TrimSpace(h) {
-			validHost = true
+	if !result.Success {
+		for _, code := range result.ErrorCodes {
+			if code == "missing-input-secret" || code == "invalid-input-secret" {
+				return fail("CAPTCHA_UNAVAILABLE", "验证码服务配置错误，请联系管理员")
+			}
 		}
+		return fail("CAPTCHA_FAILED", "验证码无效、已过期或已使用，请重新验证")
 	}
-	if !validHost || result.Action != action {
-		return fail("CAPTCHA_FAILED", "验证码来源或用途不匹配")
-	}
+	// 此站点已停用域名验证；当前复选框不发送 action，不匹配来源或用途。
 	return nil
 }
 func (s *Server) sign(id int64, role string, duration time.Duration, versions ...uint64) string {
@@ -389,7 +377,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Username string         `json:"username"`
 		Password string         `json:"password"`
-		Token    string         `json:"turnstileToken"`
+		Token    string         `json:"recaptchaToken"`
 		Accepted string         `json:"acceptedNotice"`
 		Report   InstanceReport `json:"report"`
 	}
@@ -405,7 +393,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		s.error(w, 400, fail("NOTICE_REQUIRED", "请阅读并同意最新注意事项"))
 		return
 	}
-	if err := s.verify(r.Context(), in.Token, "register"); err != nil {
+	if err := s.verify(r.Context(), in.Token); err != nil {
 		s.error(w, 400, err)
 		return
 	}
@@ -429,7 +417,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Username string         `json:"username"`
 		Password string         `json:"password"`
-		Token    string         `json:"turnstileToken"`
+		Token    string         `json:"recaptchaToken"`
 		Report   InstanceReport `json:"report"`
 	}
 	if err := decode(w, r, &in); err != nil {
@@ -440,7 +428,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { <-s.Slots }()
-	if err := s.verify(r.Context(), in.Token, "login"); err != nil {
+	if err := s.verify(r.Context(), in.Token); err != nil {
 		s.error(w, 400, err)
 		return
 	}
@@ -473,7 +461,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Password string `json:"password"`
-		Token    string `json:"turnstileToken"`
+		Token    string `json:"recaptchaToken"`
 	}
 	if err := decode(w, r, &in); err != nil {
 		s.error(w, 400, err)
@@ -483,7 +471,7 @@ func (s *Server) adminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { <-s.Slots }()
-	if err := s.verify(r.Context(), in.Token, "console-login"); err != nil {
+	if err := s.verify(r.Context(), in.Token); err != nil {
 		s.error(w, 400, err)
 		return
 	}

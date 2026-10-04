@@ -10,6 +10,7 @@ frontend/test-results/
 frontend/playwright-report/
 frontend/*.tsbuildinfo
 .venv/
+__pycache__/
 *.db*
 *.exe
 *.log

@@ -92,7 +92,7 @@ func TestPermanentInstanceBindingHTTPAndRestart(t *testing.T) {
 	}
 	identity, other := newTestIdentity(t), newTestIdentity(t)
 	register := func(name string, i testIdentity) (int, map[string]any) {
-		return request("POST", "/api/register", map[string]any{"username": name, "password": "test-password-123", "turnstileToken": turnstileTestToken, "acceptedNotice": "2026-10-03", "report": i.report(now, 1000, now.Unix())}, "", "")
+		return request("POST", "/api/register", map[string]any{"username": name, "password": "test-password-123", "recaptchaToken": recaptchaTestToken, "acceptedNotice": "2026-10-03", "report": i.report(now, 1000, now.Unix())}, "", "")
 	}
 	code, result := register("绑定测试", identity)
 	if code != 201 {
@@ -115,16 +115,16 @@ func TestPermanentInstanceBindingHTTPAndRestart(t *testing.T) {
 		t.Fatal("正确实例会话不可用")
 	}
 	login := func(i testIdentity, captcha string) (int, map[string]any) {
-		return request("POST", "/api/login", map[string]any{"username": "绑定测试", "password": "test-password-123", "turnstileToken": captcha, "report": i.report(now, 0, 0)}, "", "")
+		return request("POST", "/api/login", map[string]any{"username": "绑定测试", "password": "test-password-123", "recaptchaToken": captcha, "report": i.report(now, 0, 0)}, "", "")
 	}
 	if code, _ = login(identity, ""); code != 400 {
 		t.Fatal("登录也必须过验证码")
 	}
-	code, result = login(other, turnstileTestToken)
+	code, result = login(other, recaptchaTestToken)
 	if code != 403 {
 		t.Fatal("禁止账户换绑", code, result)
 	}
-	code, result = login(identity, turnstileTestToken)
+	code, result = login(identity, recaptchaTestToken)
 	if code != 200 {
 		t.Fatal("同实例登录无需行动力真实性验证", code, result)
 	}

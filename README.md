@@ -22,7 +22,7 @@ npm run dev:mock --prefix frontend
 
 - 玩家：`海风指挥官` / `mock-player-password`；也可直接注册新用户名。
 - 管理员：`mock-admin-password`。
-- 注册、登录和管理员登录都使用 Cloudflare 官方测试验证码，前端使用公开测试 site key `1x00000000000000000000AA`，Go 用官方测试 secret 调用 Siteverify，须联网；不再使用本地复选框或直接放行。测试密钥自动通过测试挑战，生产只接受真实密钥及真实验证响应。
+- 注册、登录和管理员登录都使用 Google reCAPTCHA v2 官方测试验证码，公开测试 site key 为 `6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI`；点击复选框后取得 token，Go 使用官方测试 secret 经 `www.recaptcha.net` 请求 Siteverify，须联网。Mock 不直接放行，生产拒绝官方测试 secret。
 - Mock 使用真实 Go 交易引擎和独立 `data/mock.db`；只替换验证码、种子行情和演示赛期。模拟数据库不进入版本控制。
 
 普通开发模式先启动 Go，再运行 `npm run dev --prefix frontend`。Vite 将 `/api` 代理到本机 8080；生产管理控制台与 API 同源；玩家终端经 AzurPilot 的认证 WebSocket 转发，不在浏览器中保存交易会话、上传令牌或实例私钥。
@@ -73,7 +73,9 @@ AzurPilot 的总行动力历史追加保存 HMAC-SHA-256 哈希链，正常修�
 
 后台每 2 秒只比较配置文件 / 运行观察 SQLite 的修改状态，未变化时不重读配置、不签名、不访问交易所；仅转发新行动力记录，最多每 15 秒上传一次。失败在 15 秒后重试同条记录，最多 3 次，新记录重新开始。没有新增游戏截图、OCR 或游戏操作，也没有修改游戏任务脚本。实例签名只确认身份和请求完整性，不证明游戏数据真实。
 
-**Cloudflare 域名配置必须包含 AzurPilot 地址栏 hostname**，以及管理控制台的 `stock.nanoda.work`。例如本地 AzurPilot 的 hostname 是 `localhost` 或 `127.0.0.1`，远程 WebUI 为 `pilot.example.com`；这些值同时加入 Turnstile 控制台允许域名与交易所 `.env` 的 `TURNSTILE_HOSTNAMES`。只给 stock 域名授权会使原生页面的注册和登录验证码被拒绝。公开 site key `0x4AAAAAAFMCQstp3hgd939a` 固定在 AzurPilot 玩家前端及本仓库管理前端，后端不读取、不下发 site key；更换时须修改两个前端并重新构建。私密 secret 只留在 Go 环境变量 `TURNSTILE_SECRET_KEY` 中。注册及登录必须通过服务端 Siteverify 校验，缺失、过期或来源/用途不匹配的验证码均拒绝。
+玩家及管理前端使用 Google reCAPTCHA v2，公开 site key `6Ldu7N4tAAAAABEvkf8KUza3x6rxHGLm1dP5gpMq` 固定在各自的 `recaptcha.ts` 中，后端不读取、不下发 site key。脚本、验证 iframe 与后端 Siteverify 均使用 `https://www.recaptcha.net/recaptcha/`，官方依赖脚本来自 `https://www.gstatic.com/recaptcha/`，不使用 `www.google.com` 或 `recaptcha.google.com` 入口。私密 secret 仅写入 Go 后端环境变量 `RECAPTCHA_SECRET_KEY`。此站点已在 Google 控制台停用域名验证，Go 不匹配 hostname；v2 不发送或匹配 action，因此不会再产生“验证码来源或用途不匹配”。注册和登录切换时清空 token，每次提交后重置组件，过期及旧组件延迟回调不能恢复旧 token；无效或重复使用的 token 仍由 Siteverify 拒绝。
+
+升级时需同时更新 Go 服务、管理前端与 AzurPilot 玩家前端，认证请求字段已改为 `recaptchaToken`。在服务器 `.env` 设置与上述 site key 配套的 Google `RECAPTCHA_SECRET_KEY`，移除旧验证码变量；原 Cloudflare secret 无法用于 Google。
 
 `ALLOWED_ORIGINS` 控制浏览器直连 Go API 的来源；原生页面通过 AzurPilot 服务端代理，HTTP 请求无需浏览器跨域或嵌入权限。
 
@@ -105,14 +107,13 @@ sudo bash deploy.sh mingmiao-exchange.tar.gz
 | 变量 | 用途 |
 | --- | --- |
 | `EXCHANGE_DOMAIN` | 默认 `stock.nanoda.work` |
-| `TURNSTILE_SECRET_KEY` | Cloudflare 的服务器 secret，前端永不收到 |
-| `TURNSTILE_HOSTNAMES` | Siteverify 可接受的 hostname，逗号分隔 |
+| `RECAPTCHA_SECRET_KEY` | Google reCAPTCHA v2 的服务器 secret，前端永不收到 |
 | `ADMIN_PASSWORD` | 至少 12 字符 |
 | `SESSION_SECRET` | 至少 32 字符的随机密钥，更换会使所有会话失效 |
 | `ALLOWED_ORIGINS` | 浏览器直连 Go API 的 CORS 来源 |
 | `TLS_CERT_FILE` / `TLS_KEY_FILE` | 必填，外部证书链及无密码私钥的可读绝对路径 |
 
-脚本强制使用外部证书，不安装 certbot、不签发证书、不设置续期任务。未配置证书、文件不可读、已过期、域名不符或公私钥不匹配会拒绝部署。证书校验在停服及替换文件之前完成；HTTP 自动跳转 HTTPS。证书由外部流程维护，更新后执行 `nginx -t && systemctl reload nginx`。使用 Cloudflare 代理时设置 **Full (strict)**，Turnstile 中允许管理控制台及 AzurPilot 的实际 hostname。脚本从 Cloudflare 官方拉取受信代理网段，nginx 只信任这些来源的 `CF-Connecting-IP`，Go 只信任本机反代的真实 IP 头。
+脚本强制使用外部证书，不安装 certbot、不签发证书、不设置续期任务。未配置证书、文件不可读、已过期、域名不符或公私钥不匹配会拒绝部署。证书校验在停服及替换文件之前完成；HTTP 自动跳转 HTTPS。证书由外部流程维护，更新后执行 `nginx -t && systemctl reload nginx`。使用 Cloudflare 代理时设置 **Full (strict)**。脚本从 Cloudflare 官方拉取受信代理网段，nginx 只信任这些来源的 `CF-Connecting-IP`，Go 只信任本机反代的真实 IP 头。
 
 程序安装至 `/opt/mingmiao-exchange`，数据库独立保留于 `data/exchange.db`，每次升级停服后连同 WAL 备份。systemd 设置开机启动、自动重启和权限隔离；不再设置固定 CPU、Go 内存、进程内存或任务数上限，旧环境文件里的 `GOMAXPROCS=1` / `GOMEMLIMIT=64MiB` 也不再被部署脚本写入服务环境。Go 使用系统默认调度，认证按启动时可用 CPU 配置并发。数据库使用 WAL / NORMAL、单连接、2 MiB 页缓存；关闭系统时先完成在途请求。nginx 复用上游连接及 TLS 会话，异常请求在进入 Go 之前过滤；按 IP 防护，不设置整个服务的固定吞吐上限。
 
@@ -220,7 +221,7 @@ curl -I https://stock.nanoda.work/console
 curl -i https://stock.nanoda.work/api/meta
 ```
 
-如果源站 nginx 已返回 200、公网仍返回 404，检查当前 CDN / DNS 是否指向这台服务器，以及回源 Host 是否为 `stock.nanoda.work`；修复后再清除可能缓存的旧 404。控制台加载后若登录验证码失败，按前文配置 Turnstile 的允许域名、`TURNSTILE_HOSTNAMES` 和服务器 secret。
+如果源站 nginx 已返回 200、公网仍返回 404，检查当前 CDN / DNS 是否指向这台服务器，以及回源 Host 是否为 `stock.nanoda.work`；修复后再清除可能缓存的旧 404。控制台加载后若登录验证码失败，检查 `www.recaptcha.net` 及官方静态资源的网络访问、Google site key 与服务器 `RECAPTCHA_SECRET_KEY` 是否配套，并重新完成人机验证；无需配置验证码域名白名单。
 
 如果部署时 nginx 启动失败并报告 `Address already in use`，但 `ss -ltnp` 显示端口由已有 nginx 占用，可能存在未被 `nginx.service` 管理的 master，或 `/run/nginx.pid` 为空 / 过期。新版脚本会在 systemd 重载失败或服务未激活时扫描 `/proc`，核对 nginx 可执行文件、网络命名空间和 `/etc/nginx/nginx.conf`，对唯一匹配的 master 发送 HUP；不会写入 PID 文件或让 systemd 接管现有进程。只有没有 nginx master 时才尝试 systemd 启动，识别不明确时直接报错。原有启动 / 保活机制仍需维护；若要迁移到 systemd，先用 `ps` 和 `/proc/<master-pid>/cgroup` 确认现有启动来源，再安排迁移，避免影响同机其他站点。
 
@@ -261,7 +262,7 @@ AzurPilot 的独立同步测试为 `uv run python -m unittest tests.test_stock_e
 
 ## 参考资料
 
-- [Cloudflare Turnstile 服务端验证](https://developers.cloudflare.com/turnstile/get-started/server-side-validation/)：一次性 token、服务端校验和响应字段。
+- [Google reCAPTCHA 服务端验证](https://developers.google.com/recaptcha/docs/verify)及[全球访问入口](https://developers.google.com/recaptcha/docs/faq)：一次性 token、服务端校验及 `www.recaptcha.net` 替代入口。
 - [Cloudflare 真实访问 IP](https://developers.cloudflare.com/support/troubleshooting/restoring-visitor-ips/restoring-original-visitor-ips/)：只信任受信代理的 IP 头。
 - [上交所交易规则（2026 年修订）](https://www.sse.com.cn/lawandrules/sselawsrules2025/stocks/exchange/c/c_20260424_10816482.shtml)：股份回转交易和交易时段参考。
 - [港交所交易税费](https://www.hkex.com.hk/Services/Rules-and-Forms-and-Fees/Fees/Securities-(Hong-Kong)/Trading/Transaction?sc_lang=en)：印花税及交易征费参考。

@@ -1,9 +1,10 @@
 import {test,expect} from '@playwright/test'
+import {completeCaptcha} from './recaptcha'
 
 test('控制台验证码登录、创建发布预设与服务首页',async({page})=>{
   await page.goto('/');await expect(page.getByText('交易终端已集成到 AzurPilot。')).toBeVisible();await expect(page.getByRole('dialog')).toHaveCount(0)
   await page.goto('/console');await page.getByLabel('管理员密码').fill('mock-admin-password')
-  await expect(page.locator('input[name="cf-turnstile-response"]')).toHaveValue('XXXX.DUMMY.TOKEN.XXXX',{timeout:20000})
+  await completeCaptcha(page)
   await assertCaptchaCentered(page)
   await page.setViewportSize({width:390,height:844});await assertCaptchaCentered(page);await page.screenshot({path:'test-results/console-captcha-mobile.png',fullPage:true})
   await page.setViewportSize({width:1600,height:1080})

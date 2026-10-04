@@ -58,7 +58,7 @@ while IFS= read -r env_line || [[ -n "$env_line" ]]; do
   if [[ "$env_value" == \"*\" || "$env_value" == \'*\' ]]; then env_value="${env_value:1:${#env_value}-2}"; fi
   export "$env_key=$env_value"
 done < "$ENV_FILE"
-for env_key in EXCHANGE_DOMAIN TURNSTILE_SECRET_KEY ADMIN_PASSWORD SESSION_SECRET TLS_CERT_FILE TLS_KEY_FILE; do
+for env_key in EXCHANGE_DOMAIN RECAPTCHA_SECRET_KEY ADMIN_PASSWORD SESSION_SECRET TLS_CERT_FILE TLS_KEY_FILE; do
   env_value="${!env_key:-}"
   if [[ -z "$env_value" || "$env_value" == replace-* ]]; then echo "请在 $ENV_FILE 配置 $env_key"; exit 1; fi
 done
