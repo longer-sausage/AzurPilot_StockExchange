@@ -1,4 +1,5 @@
 export class ApiError extends Error { constructor(message:string,public code:string,public status:number){super(message)} }
+export function subscribeUpdates(listener:()=>void){const events=new EventSource('/api/events');events.addEventListener('stock',listener);return ()=>events.close()}
 export async function api<T>(path:string,body?:unknown,token?:string,method?:string):Promise<T>{
   const response=await fetch(`/api${path}`,{method:method??(body===undefined?'GET':'POST'),headers:{...(body===undefined?{}:{'Content-Type':'application/json'}),...(token?{Authorization:`Bearer ${token}`}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(12000)})
   const data=await response.json();if(!response.ok)throw new ApiError(data.error?.message??'服务暂不可用',data.error?.code??'HTTP_ERROR',response.status);return data as T

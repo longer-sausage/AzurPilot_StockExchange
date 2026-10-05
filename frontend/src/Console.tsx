@@ -1,6 +1,6 @@
 import {useEffect,useState,type FormEvent} from 'react'
 import {Cat,LogOut,Save,ShieldCheck,Plus,Trash2,RefreshCw} from 'lucide-react'
-import {api,compact,feesTotal} from './api'
+import {api,compact,feesTotal,subscribeUpdates} from './api'
 import {Captcha} from './Captcha'
 import {UserManagement} from './Users'
 import type {Market,Meta,Rules,Settings} from './types'
@@ -19,6 +19,7 @@ export function Console({meta}:{meta:Meta}){
   const [token,setToken]=useState(()=>sessionStorage.getItem('mmex.admin')??''),[password,setPassword]=useState(''),[captcha,setCaptcha]=useState(''),[reset,setReset]=useState(0),[settings,setSettings]=useState<Settings>(),[market,setMarket]=useState<Market>(),[busy,setBusy]=useState(false),[error,setError]=useState(''),[message,setMessage]=useState(''),[newID,setNewID]=useState(''),[newName,setNewName]=useState('')
   async function load(){try{const [s,m]=await Promise.all([api<Settings>('/console/settings',undefined,token),api<Market>('/market')]);setSettings(s);setMarket(m);setError('')}catch(e){setError((e as Error).message);if((e as {status?:number}).status===401){setToken('');sessionStorage.removeItem('mmex.admin')}}}
   useEffect(()=>{if(token)void load()},[token])
+  useEffect(()=>{if(!token)return;let active=true,busy=false,queued=false;const refresh=async()=>{queued=true;if(busy)return;busy=true;try{do{queued=false;try{const value=await api<Market>('/market');if(active)setMarket(value)}catch(e){if(active)setError((e as Error).message)}}while(queued&&active)}finally{busy=false}};const unsubscribe=subscribeUpdates(()=>void refresh());return ()=>{active=false;unsubscribe()}},[token])
   async function login(e:FormEvent){e.preventDefault();if(busy||!captcha)return;const recaptchaToken=captcha;setCaptcha('');setBusy(true);setError('');try{const result=await api<{token:string}>('/console/login',{password,recaptchaToken});sessionStorage.setItem('mmex.admin',result.token);setToken(result.token);setPassword('')}catch(e){setError((e as Error).message)}finally{setCaptcha('');setReset(n=>n+1);setBusy(false)}}
   async function save(){if(!settings)return;setBusy(true);setError('');setMessage('');try{setSettings(await api<Settings>('/console/settings',settings,token,'PUT'));setMessage('配置已发布。初始资金用于新开户及下个赛季重置，当前账户余额不变；月赛日期从下月生效，费率、时段和退市阈值即时生效。')}catch(e){setError((e as Error).message)}finally{setBusy(false)}}
   function update(key:keyof Rules,value:unknown){setSettings(s=>s?{...s,active:{...s.active,[key]:value}}:s)}

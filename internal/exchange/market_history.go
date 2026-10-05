@@ -59,7 +59,7 @@ func historyCanonical(r HistoryReport) string {
 	return text.String()
 }
 func verifyHistory(r HistoryReport, now time.Time) (*InstanceBinding, error) {
-	if len(r.Points) > 1024 || len(r.Points) == 0 && len(r.Digest) != 64 || r.Count < 0 {
+	if len(r.Points) == 0 && len(r.Digest) != 64 || r.Count < 0 {
 		return nil, fail("INVALID_HISTORY", "历史批次或校对字段无效")
 	}
 	from, to, err := monthRange(r.Month, now)

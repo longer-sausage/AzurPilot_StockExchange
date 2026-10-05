@@ -180,7 +180,7 @@ UMask=0077
 [Install]
 WantedBy=multi-user.target
 UNIT
-# 仅信任 Cloudflare 公布的代理网段，恢复真实访问 IP，避免所有玩家共享限流桶。
+# 仅信任 Cloudflare 公布的代理网段，恢复日志中的真实访问 IP。
 CF_IP_FILE="$(mktemp /tmp/mmex-cloudflare.XXXXXX)"
 curl -fsSL https://www.cloudflare.com/ips-v4 -o "$CF_IP_FILE"
 printf '\n' >> "$CF_IP_FILE"
@@ -192,11 +192,8 @@ if len(networks) < 10: raise SystemExit('Cloudflare 代理网段列表无效')
 pathlib.Path(sys.argv[2]).write_text(''.join('set_real_ip_from '+str(n)+';\n' for n in networks)+'real_ip_header CF-Connecting-IP;\n')
 PY
 # 外部证书直接交给 nginx。IPv4 / IPv6 均监听，避免 IPv6 回源落到其他站点。
-# 按访问 IP 防护，不设置整个服务器的吞吐上限。
+# 同步和交易请求直接转发，事件流关闭代理缓冲。
 cat > /etc/nginx/sites-available/mingmiao-exchange <<NGINX
-limit_req_zone \$binary_remote_addr zone=mmex_api_requests:1m rate=10r/s;
-limit_req_zone \$binary_remote_addr zone=mmex_auth_requests:1m rate=8r/m;
-limit_conn_zone \$binary_remote_addr zone=mmex_connections:1m;
 upstream mmex_api_backend {
     server 127.0.0.1:8080;
     keepalive 32;
@@ -211,16 +208,11 @@ server {
     ssl_session_cache shared:mmex_tls:1m;
     ssl_session_timeout 10m;
     include /etc/nginx/mingmiao-realip.conf;
-    client_max_body_size 64k;
+    client_max_body_size 0;
     client_header_timeout 5s;
     client_body_timeout 12s;
     send_timeout 20s;
     keepalive_timeout 20s;
-    limit_conn mmex_connections 64;
-    limit_conn_status 429;
-    limit_req zone=mmex_api_requests burst=40 nodelay;
-    limit_req_status 429;
-    limit_req_log_level notice;
     proxy_http_version 1.1;
     proxy_set_header Connection "";
     proxy_set_header Host \$host;
@@ -231,13 +223,12 @@ server {
     gzip on;
     gzip_min_length 1024;
     gzip_types application/json application/javascript text/css;
-    location ~ ^/api/(register|login|console/login)\$ {
-        limit_req zone=mmex_auth_requests burst=3 nodelay;
-        limit_req zone=mmex_api_requests burst=40 nodelay;
+    location = /api/events {
+        proxy_buffering off;
+        proxy_read_timeout 60s;
         proxy_pass http://mmex_api_backend;
     }
     location /api/ {
-        limit_req zone=mmex_api_requests burst=40 nodelay;
         proxy_pass http://mmex_api_backend;
     }
     location / { proxy_pass http://mmex_api_backend; }

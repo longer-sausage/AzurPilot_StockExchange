@@ -188,6 +188,7 @@ type Player struct {
 	JoinedAt       int64               `json:"joinedAt"`
 	Disabled       bool                `json:"disabled"`
 	Delisted       bool                `json:"delisted"`
+	Watchlist      []int64             `json:"watchlist"`
 	Binding        *InstanceBinding    `json:"binding"`
 }
 

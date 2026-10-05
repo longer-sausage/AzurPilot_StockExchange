@@ -18,7 +18,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -74,18 +73,10 @@ type session struct {
 	Binding string `json:"binding,omitempty"`
 	Version uint64 `json:"version,omitempty"`
 }
-type limitEntry struct {
-	Start  int64
-	Count  int
-	Active int
-}
 type Server struct {
 	engine        *Engine
 	config        Config
 	client        *http.Client
-	mu            sync.Mutex
-	limits        map[string]*limitEntry
-	nextSweep     int64
 	mux           *http.ServeMux
 	Slots         chan struct{}
 	passwordSlots chan struct{}
@@ -98,12 +89,13 @@ func NewServer(e *Engine, c Config) *Server {
 	verifySlots := max(4, cpus*2)
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.MaxConnsPerHost = verifySlots, verifySlots, verifySlots
-	s := &Server{engine: e, config: c, client: &http.Client{Timeout: 8 * time.Second, Transport: transport}, limits: map[string]*limitEntry{}, mux: http.NewServeMux(), Slots: make(chan struct{}, verifySlots), passwordSlots: make(chan struct{}, cpus), SiteverifyURL: "https://www.recaptcha.net/recaptcha/api/siteverify"}
+	s := &Server{engine: e, config: c, client: &http.Client{Timeout: 8 * time.Second, Transport: transport}, mux: http.NewServeMux(), Slots: make(chan struct{}, verifySlots), passwordSlots: make(chan struct{}, cpus), SiteverifyURL: "https://www.recaptcha.net/recaptcha/api/siteverify"}
 	e.RequireBinding = true
 	s.mux.HandleFunc("GET /api/meta", s.meta)
 	s.mux.HandleFunc("POST /api/register", s.register)
 	s.mux.HandleFunc("POST /api/login", s.login)
 	s.mux.HandleFunc("GET /api/market", s.market)
+	s.mux.HandleFunc("GET /api/events", s.events)
 	s.mux.HandleFunc("GET /api/history/{stock}", s.history)
 	s.mux.HandleFunc("GET /api/stocks/{stock}", s.stockDetail)
 	s.mux.HandleFunc("POST /api/quote-history", s.uploadHistory)
@@ -111,8 +103,10 @@ func NewServer(e *Engine, c Config) *Server {
 	s.mux.HandleFunc("GET /api/seasons", s.seasons)
 	s.mux.HandleFunc("POST /api/quotes", s.upload)
 	s.mux.HandleFunc("GET /api/account", s.player(s.account))
+	s.mux.HandleFunc("POST /api/watchlist", s.player(s.watchlist))
 	s.mux.HandleFunc("POST /api/upload-token", s.player(s.rotate))
 	s.mux.HandleFunc("POST /api/orders", s.player(s.submit))
+	s.mux.HandleFunc("GET /api/orders", s.player(s.orders))
 	s.mux.HandleFunc("DELETE /api/orders/{order}", s.player(s.cancel))
 	s.mux.HandleFunc("POST /api/console/login", s.adminLogin)
 	s.mux.HandleFunc("GET /api/console/settings", s.admin(s.getSettings))
@@ -171,10 +165,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(204)
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/api/") && !s.limit(r, "all", 240, 60) {
-		s.error(w, 429, fail("RATE_LIMIT", "请求过于频繁，请稍后再试"))
-		return
-	}
 	defer func() {
 		if v := recover(); v != nil {
 			slog.Error("请求异常", "path", r.URL.Path)
@@ -182,46 +172,6 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	s.mux.ServeHTTP(w, r)
-}
-func ip(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	// 仅信任本机反向代理的 IP 头；公网直连无法伪造来源绕过限流。
-	if addr := net.ParseIP(host); addr != nil && addr.IsLoopback() {
-		if forwarded := net.ParseIP(r.Header.Get("X-Real-IP")); forwarded != nil {
-			return forwarded.String()
-		}
-	}
-	return host
-}
-func (s *Server) limit(r *http.Request, key string, count int, seconds int64) bool {
-	k := ip(r) + ":" + key
-	now := time.Now().Unix()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if now >= s.nextSweep {
-		s.nextSweep = now + 60
-		for id, v := range s.limits {
-			if now-v.Start > 300 {
-				delete(s.limits, id)
-			}
-		}
-	}
-	v := s.limits[k]
-	if v == nil && len(s.limits) >= 10000 {
-		return false
-	}
-	if v == nil || now-v.Start >= seconds {
-		v = &limitEntry{Start: now}
-		s.limits[k] = v
-	}
-	if v.Count >= count {
-		return false
-	}
-	v.Count++
-	return true
 }
 func (s *Server) json(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -236,12 +186,10 @@ func (s *Server) error(w http.ResponseWriter, status int, err error) {
 	s.json(w, status, map[string]any{"error": publicError(err)})
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) error {
-	limit := int64(65536)
-	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	d := json.NewDecoder(r.Body)
 	d.DisallowUnknownFields()
 	if err := d.Decode(v); err != nil {
-		return fail("INVALID_JSON", "请求格式无效或超出大小限制")
+		return fail("INVALID_JSON", "请求格式无效")
 	}
 	var extra any
 	if err := d.Decode(&extra); err != io.EOF {
@@ -347,11 +295,6 @@ func (s *Server) admin(fn http.HandlerFunc) http.HandlerFunc {
 	}
 }
 func (s *Server) authSlot(w http.ResponseWriter, r *http.Request) bool {
-	if !s.limit(r, "auth", 8, 60) {
-		w.Header().Set("Retry-After", "60")
-		s.error(w, 429, fail("RATE_LIMIT", "认证请求过于频繁，一分钟后重试"))
-		return false
-	}
 	select {
 	case s.Slots <- struct{}{}:
 		return true

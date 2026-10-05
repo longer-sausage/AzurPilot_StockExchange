@@ -308,7 +308,7 @@ func (e *Engine) StockDetailJSON(id int64, period, month, day string) ([]byte, s
 	if out.Summary.PreviousClose == 0 {
 		_ = e.db.QueryRow("SELECT close FROM minute_prices WHERE stock_id=? AND time<? ORDER BY time DESC LIMIT 1", id, dayStart.UnixMilli()).Scan(&out.Summary.PreviousClose)
 	}
-	rows, err := e.db.Query("SELECT id,stock_id,username,side,kind,quantity,price,time,forced FROM trades WHERE stock_id=? AND time>=? AND time<? ORDER BY time DESC,id DESC LIMIT 100", id, from, to)
+	rows, err := e.db.Query("SELECT id,stock_id,username,side,kind,quantity,price,time,forced FROM trades WHERE stock_id=? AND time>=? AND time<? ORDER BY time DESC,id DESC", id, from, to)
 	if err != nil {
 		return nil, "", err
 	}
@@ -336,9 +336,6 @@ func (e *Engine) StockDetailJSON(id int64, period, month, day string) ([]byte, s
 		}
 	}
 	sort.Slice(out.Pending, func(i, j int) bool { return out.Pending[i].ID > out.Pending[j].ID })
-	if len(out.Pending) > 50 {
-		out.Pending = out.Pending[:50]
-	}
 	if err = e.db.QueryRow("SELECT COUNT(*),COALESCE(MIN(time),0),COALESCE(MAX(time),0) FROM quote_history WHERE stock_id=? AND time>=? AND time<? AND precise=1", id, from, to).Scan(&out.Coverage.Count, &out.Coverage.First, &out.Coverage.Last); err != nil {
 		return nil, "", err
 	}
@@ -405,10 +402,6 @@ func (s *Server) stockDetail(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 func (s *Server) uploadHistory(w http.ResponseWriter, r *http.Request) {
-	if !s.limit(r, "history", 30, 60) {
-		s.error(w, 429, fail("RATE_LIMIT", "历史补传过于频繁，请稍后重试"))
-		return
-	}
 	var in struct {
 		Report HistoryReport `json:"report"`
 	}
@@ -432,10 +425,6 @@ func (s *Server) uploadHistory(w http.ResponseWriter, r *http.Request) {
 	s.json(w, 200, map[string]any{"ok": true, "accepted": len(in.Report.Points), "month": in.Report.Month})
 }
 func (s *Server) historyManifest(w http.ResponseWriter, r *http.Request) {
-	if !s.limit(r, "manifest", 12, 60) {
-		s.error(w, 429, fail("RATE_LIMIT", "月历史校对过于频繁"))
-		return
-	}
 	id, err := s.engine.UploadOwner(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), r.Header.Get("X-MMEX-Instance"))
 	if err != nil {
 		s.error(w, 401, err)

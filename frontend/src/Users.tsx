@@ -15,7 +15,7 @@ export function UserManagement({token,market,onUnauthorized,onChanged}:{token:st
     const params=new URLSearchParams({q:query,status,page:String(page),pageSize:'20'})
     void api<AdminPlayerList>(`/console/players?${params}`,undefined,token).then(result=>{if(active)setList(result)}).catch(e=>{if(active){setError(e.message);if(e.status===401)onUnauthorized()}}).finally(()=>{if(active)setLoading(false)})
     return ()=>{active=false}
-  },[token,query,status,page,refresh])
+  },[token,query,status,page,refresh,market?.revision])
   function changed(){setRefresh(v=>v+1);onChanged()}
   const pages=Math.max(1,Math.ceil((list?.total??0)/20)),currentPage=list?.page??page
   return <div className="user-management">
@@ -42,6 +42,7 @@ function UserDetail({id,token,market,onClose,onChanged,onUnauthorized}:{id:numbe
     void api<Account>(`/console/players/${id}`,undefined,token).then(result=>{if(active){populate(result);heading.current?.focus();heading.current?.scrollIntoView({block:'start',behavior:'smooth'})}}).catch(e=>{if(active){setError(e.message);if(e.status===401)onUnauthorized()}}).finally(()=>{if(active)setLoading(false)})
     return ()=>{active=false}
   },[id,token,reload])
+  useEffect(()=>{let active=true;void api<Account>(`/console/players/${id}`,undefined,token).then(value=>{if(active)setAccount(value)}).catch(e=>{if(active){setError(e.message);if(e.status===401)onUnauthorized()}});return ()=>{active=false}},[id,token,market?.revision])
   async function copy(){if(!account)return;try{await navigator.clipboard.writeText(account.player.identityCode);setMessage('身份识别码已复制')}catch{setError('复制失败，请选中身份识别码手动复制')}}
   async function save(event:FormEvent){
     event.preventDefault();if(!account)return;setError('');setMessage('')
@@ -85,7 +86,7 @@ function UserDetail({id,token,market,onClose,onChanged,onUnauthorized}:{id:numbe
         <h3>资金交收明细</h3><div className="table-scroll"><table><thead><tr><th>金额 (模拟币)</th><th>可用时间</th><th>状态</th></tr></thead><tbody>{(player.settlements??[]).map((s,i)=><tr key={i}><td>{money(s.amount)}</td><td>{stamp(s.availableAt)}</td><td>{s.availableAt<=now?'已交收':'等待交收'}</td></tr>)}{!player.settlements?.length&&<tr><td colSpan={3} className="user-empty">暂无待交收资金</td></tr>}</tbody></table></div>
       </>}
       {tab==='positions'&&<div className="table-scroll"><table><thead><tr><th>证券</th><th>方向</th><th>数量 (股)</th><th>可卖 (股)</th><th>持仓成本 (模拟币)</th><th>融资本金</th><th>初始保证金率</th></tr></thead><tbody>{positions.map(pos=><tr key={pos.stockId}><td>{stockName(pos.stockId)}<small>{stockSymbol(pos.stockId)}</small></td><td>{pos.quantity>0?'多头':'空头'}</td><td>{Math.abs(pos.quantity).toLocaleString()}</td><td>{pos.quantity>0?(pos.lots??[]).filter(l=>l.availableAt<=now).reduce((total,l)=>total+l.quantity,0).toLocaleString():'—'}</td><td>{money(pos.cost)}</td><td>{money(pos.loan??0)}</td><td>{((pos.marginPPM??0)/10000).toFixed(2)}%</td></tr>)}{!positions.length&&<tr><td colSpan={7} className="user-empty">当前没有持仓</td></tr>}</tbody></table></div>}
-      {tab==='orders'&&<><p className="muted user-table-note">显示全部挂单及最近 100 笔已结束委托。</p><div className="table-scroll"><table><thead><tr><th>委托 / 证券</th><th>方向 / 类型</th><th>数量 / 杠杆</th><th>委托价 / 成交价</th><th>费用 / 冻结</th><th>时间</th><th>状态 / 原因</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>#{o.id} · {stockName(o.stockId)}<small>{stockSymbol(o.stockId)}</small></td><td>{sideName[o.side]??o.side}<small>{kindName[o.kind]??o.kind} · {o.tif}</small></td><td>{o.quantity.toLocaleString()} 股<small>{o.leverage||1} 倍</small></td><td>{o.kind==='market'?'市价':money(o.limit)}<small>成交 {o.status==='filled'?money(o.price):'—'}</small></td><td>{money(feesTotal(o.fees))}<small>冻结 {money(o.reserved)}</small></td><td>{stamp(o.createdAt)}<small>{o.executedAt?`成交 ${stamp(o.executedAt)}`:o.expiresAt?`截止 ${stamp(o.expiresAt)}`:'GTC'}</small></td><td>{statusName[o.status]??o.status}<small>{o.reason||'—'}</small></td></tr>)}{!orders.length&&<tr><td colSpan={7} className="user-empty">暂无委托记录</td></tr>}</tbody></table></div></>}
+      {tab==='orders'&&<><p className="muted user-table-note">显示全部挂单与已结束委托。</p><div className="table-scroll"><table><thead><tr><th>委托 / 证券</th><th>方向 / 类型</th><th>数量 / 杠杆</th><th>委托价 / 成交价</th><th>费用 / 冻结</th><th>时间</th><th>状态 / 原因</th></tr></thead><tbody>{orders.map(o=><tr key={o.id}><td>#{o.id} · {stockName(o.stockId)}<small>{stockSymbol(o.stockId)}</small></td><td>{sideName[o.side]??o.side}<small>{kindName[o.kind]??o.kind} · {o.tif}</small></td><td>{o.quantity.toLocaleString()} 股<small>{o.leverage||1} 倍</small></td><td>{o.kind==='market'?'市价':money(o.limit)}<small>成交 {o.status==='filled'?money(o.price):'—'}</small></td><td>{money(feesTotal(o.fees))}<small>冻结 {money(o.reserved)}</small></td><td>{stamp(o.createdAt)}<small>{o.executedAt?`成交 ${stamp(o.executedAt)}`:o.expiresAt?`截止 ${stamp(o.expiresAt)}`:'GTC'}</small></td><td>{statusName[o.status]??o.status}<small>{o.reason||'—'}</small></td></tr>)}{!orders.length&&<tr><td colSpan={7} className="user-empty">暂无委托记录</td></tr>}</tbody></table></div></>}
     </>}
   </section>
 }

@@ -41,7 +41,6 @@ func (e *Engine) delistIfNeeded(stock *Player, now time.Time) {
 			}
 		}
 		e.forcedCloseStock(p, stock.ID, now, reason)
-		trimOrders(p)
 		e.risk(p, now)
 	}
 }

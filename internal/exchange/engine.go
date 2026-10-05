@@ -204,9 +204,6 @@ func (e *Engine) Upload(token string, ap, observed int64, bindings ...*InstanceB
 			}
 			return fail("OLD_QUOTE", "同一记录时间不能上报不同数值")
 		}
-		if now.Unix()-owner.Quote.UploadedAt < 15 {
-			return fail("QUOTE_THROTTLED", "报价最多每 15 秒更新一次")
-		}
 		for holder := range e.watchers[id] {
 			p := e.touch(holder)
 			e.accrue(p, now.Unix())
@@ -345,11 +342,7 @@ func (e *Engine) MarketJSON() ([]byte, string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := e.clock()
-	interval := int64(60)
-	if len(e.marginOwners) > 0 {
-		interval = 15
-	}
-	bucket := now.Unix() / interval
+	bucket := now.Unix()
 	if e.cache != nil && e.cacheRevision == e.state.Revision && e.cacheTime == bucket && now.Unix() < e.cacheUntil {
 		return e.cache, fmt.Sprintf(`"%d-%d-%d"`, e.state.Revision, bucket, e.cacheVersion), nil
 	}

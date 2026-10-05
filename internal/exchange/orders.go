@@ -69,23 +69,14 @@ func (e *Engine) Submit(id int64, in OrderInput) (*Order, error) {
 		if in.TIF != "DAY" && in.TIF != "GTC" {
 			return fail("INVALID_ORDER", "有效期需为 DAY 或 GTC")
 		}
-		if in.Quantity < 1 || in.Quantity > 1_000_000 || in.Quantity%r.LotSize != 0 {
-			return fail("INVALID_ORDER", "数量须符合整手单位，最大 1,000,000 股")
+		if in.Quantity < 1 || in.Quantity%r.LotSize != 0 {
+			return fail("INVALID_ORDER", "数量须为正整数并符合整手单位")
+		}
+		if in.Quantity > LedgerSafetyLimit/MaxQuotePrice {
+			return fail("NUMERICAL_LIMIT", "委托数量超出整数账本安全边界")
 		}
 		if in.Kind != "market" && (in.Limit < 1 || in.Limit > 100_000_000) {
 			return fail("INVALID_ORDER", "委托价格须在 0.01–1,000,000 之间")
-		}
-		if stock.Quote.Price*in.Quantity > MaxNotional || in.Limit*in.Quantity > MaxNotional {
-			return fail("INVALID_ORDER", "委托金额超出限制")
-		}
-		count := 0
-		for _, o := range p.Orders {
-			if o.Status == "pending" {
-				count++
-			}
-		}
-		if count >= 20 {
-			return fail("TOO_MANY_ORDERS", "每个账户最多同时挂 20 笔委托")
 		}
 		p = e.touch(id)
 		e.accrue(p, now.Unix())
@@ -120,32 +111,11 @@ func (e *Engine) Submit(id int64, in OrderInput) (*Order, error) {
 				return err
 			}
 		}
-		trimOrders(p)
 		copy := *o
 		result = &copy
 		return nil
 	})
 	return result, err
-}
-func trimOrders(p *Player) {
-	if len(p.Orders) <= 120 {
-		return
-	}
-	keep := []*Order{}
-	completed := 0
-	for i := len(p.Orders) - 1; i >= 0; i-- {
-		o := p.Orders[i]
-		if o.Status == "pending" || completed < 100 {
-			keep = append(keep, o)
-			if o.Status != "pending" {
-				completed++
-			}
-		}
-	}
-	for i, j := 0, len(keep)-1; i < j; i, j = i+1, j-1 {
-		keep[i], keep[j] = keep[j], keep[i]
-	}
-	p.Orders = keep
 }
 func (e *Engine) validatePosition(p *Player, o *Order, now int64) error {
 	if o.Side == "buy" || o.Side == "short" {
@@ -368,7 +338,6 @@ func (e *Engine) processOrders(p *Player, now time.Time) {
 			o.Reason = err.Error()
 		}
 	}
-	trimOrders(p)
 }
 func cancelPending(p *Player, reason string) {
 	for _, o := range p.Orders {
@@ -389,7 +358,6 @@ func (e *Engine) forcedClose(p *Player, now time.Time, reason string) {
 			}
 		}
 	}
-	trimOrders(p)
 }
 func (e *Engine) forcedCloseStock(p *Player, stock int64, now time.Time, reason string) {
 	pos := p.Positions[stock]

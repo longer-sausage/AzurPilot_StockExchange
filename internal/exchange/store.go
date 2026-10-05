@@ -45,6 +45,7 @@ type Engine struct {
 	cacheTime     int64
 	cacheUntil    int64
 	cacheVersion  uint64
+	changes       chan struct{}
 }
 
 func Open(path string, clock Clock) (*Engine, error) {
@@ -78,7 +79,7 @@ CREATE TABLE IF NOT EXISTS seasons (id TEXT PRIMARY KEY, data TEXT NOT NULL);`)
 		db.Close()
 		return nil, err
 	}
-	e := &Engine{db: db, clock: clock, players: map[int64]*Player{}, names: map[string]int64{}, uploads: map[string]int64{}, watchers: map[int64]map[int64]bool{}}
+	e := &Engine{db: db, clock: clock, players: map[int64]*Player{}, names: map[string]int64{}, uploads: map[string]int64{}, watchers: map[int64]map[int64]bool{}, changes: make(chan struct{})}
 	var raw string
 	err = db.QueryRow("SELECT data FROM metadata WHERE id=1").Scan(&raw)
 	if err == sql.ErrNoRows {
@@ -317,9 +318,6 @@ func (e *Engine) transaction(fn func() error) error {
 			break
 		}
 		_, err = tx.Exec("INSERT INTO quotes(stock_id,time,price) VALUES(?,?,?) ON CONFLICT(stock_id,time) DO UPDATE SET price=excluded.price", v.ID, v.Point.Time, v.Point.Price)
-		if err == nil {
-			_, err = tx.Exec("DELETE FROM quotes WHERE stock_id=? AND time<(SELECT time FROM quotes WHERE stock_id=? ORDER BY time DESC LIMIT 1 OFFSET 1999)", v.ID, v.ID)
-		}
 	}
 	if err == nil {
 		err = e.writeMarketData(tx, changedStocks)
@@ -391,6 +389,10 @@ func (e *Engine) transaction(fn func() error) error {
 		e.uploads[p.UploadHash] = id
 	}
 	e.cache = nil
+	if e.changes != nil {
+		close(e.changes)
+	}
+	e.changes = make(chan struct{})
 	return nil
 }
 
@@ -407,7 +409,7 @@ func needsTick(p *Player) bool {
 }
 
 func (e *Engine) History(id int64) ([]QuotePoint, error) {
-	rows, err := e.db.Query("SELECT time/1000,price FROM (SELECT time,price FROM quote_history WHERE stock_id=? ORDER BY time DESC LIMIT 240) ORDER BY time", id)
+	rows, err := e.db.Query("SELECT time/1000,price FROM quote_history WHERE stock_id=? ORDER BY time", id)
 	if err != nil {
 		return nil, err
 	}
@@ -423,7 +425,7 @@ func (e *Engine) History(id int64) ([]QuotePoint, error) {
 	return out, rows.Err()
 }
 func (e *Engine) Seasons() ([]SeasonResult, error) {
-	rows, err := e.db.Query("SELECT data FROM seasons ORDER BY id DESC LIMIT 12")
+	rows, err := e.db.Query("SELECT data FROM seasons ORDER BY id DESC")
 	if err != nil {
 		return nil, err
 	}

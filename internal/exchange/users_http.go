@@ -56,6 +56,11 @@ func (s *Server) getPlayer(w http.ResponseWriter, r *http.Request) {
 		s.playerError(w, err)
 		return
 	}
+	v.Player.Orders, err = s.engine.orderHistory(id)
+	if err != nil {
+		s.playerError(w, err)
+		return
+	}
 	s.json(w, 200, v)
 }
 
