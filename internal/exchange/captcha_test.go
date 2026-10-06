@@ -81,7 +81,7 @@ func TestProductionCaptchaConfigAndMetadata(t *testing.T) {
 		t.Fatal("服务端必须使用 recaptcha.net")
 	}
 	csp := w.Header().Get("Content-Security-Policy")
-	if !strings.Contains(csp, "https://www.recaptcha.net/recaptcha/") || !strings.Contains(csp, "https://www.gstatic.com/recaptcha/") || strings.Contains(csp, "google.com") || strings.Contains(csp, "challenges.cloudflare.com") {
+	if !strings.Contains(csp, "https://www.recaptcha.net/recaptcha/") || !strings.Contains(csp, "https://www.gstatic.com/recaptcha/") || !strings.Contains(csp, "https://www.gstatic.cn/recaptcha/") || strings.Contains(csp, "google.com") || strings.Contains(csp, "challenges.cloudflare.com") {
 		t.Fatal("CSP 必须允许 reCAPTCHA 国内入口及官方静态资源，不得使用不可达入口", csp)
 	}
 	for _, secret := range []string{"", " \t", recaptchaTestSecret, "replace-with-google-recaptcha-secret"} {

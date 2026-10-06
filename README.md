@@ -77,7 +77,7 @@ AzurPilot 的总行动力历史追加保存 HMAC-SHA-256 哈希链，正常修�
 
 后台每 250 毫秒检查配置文件与运行观察 SQLite 的修改状态；发现新记录后立即上传，完整月份连续补传，无 15 秒上传间隔或批次数量上限。未变化时不重读配置、不签名、不访问交易所；网络失败才指数退避，最多 60 秒并持续重试。没有新增游戏截图、OCR 或游戏操作；实例签名只确认身份和请求完整性，不证明游戏数据真实。
 
-玩家及管理前端使用 Google reCAPTCHA v2，公开 site key `6Ldu7N4tAAAAABEvkf8KUza3x6rxHGLm1dP5gpMq` 固定在各自的 `recaptcha.ts` 中，后端不读取、不下发 site key。脚本、验证 iframe 与后端 Siteverify 均使用 `https://www.recaptcha.net/recaptcha/`，官方依赖脚本来自 `https://www.gstatic.com/recaptcha/`，不使用 `www.google.com` 或 `recaptcha.google.com` 入口。私密 secret 仅写入 Go 后端环境变量 `RECAPTCHA_SECRET_KEY`。此站点已在 Google 控制台停用域名验证，Go 不匹配 hostname；v2 不发送或匹配 action，因此不会再产生“验证码来源或用途不匹配”。注册和登录切换时清空 token，每次提交后重置组件，过期及旧组件延迟回调不能恢复旧 token；无效或重复使用的 token 仍由 Siteverify 拒绝。
+玩家及管理前端使用 Google reCAPTCHA v2，公开 site key `6Ldu7N4tAAAAABEvkf8KUza3x6rxHGLm1dP5gpMq` 固定在各自的 `recaptcha.ts` 中，后端不读取、不下发 site key。脚本、验证 iframe 与后端 Siteverify 均使用 `https://www.recaptcha.net/recaptcha/`，官方依赖脚本根据访问环境来自 `https://www.gstatic.com/recaptcha/` 或 `https://www.gstatic.cn/recaptcha/`；Go 返回的 CSP 在 `script-src` 中同时允许这两个资源路径，不使用 `www.google.com` 或 `recaptcha.google.com` 入口。私密 secret 仅写入 Go 后端环境变量 `RECAPTCHA_SECRET_KEY`。此站点已在 Google 控制台停用域名验证，Go 不匹配 hostname；v2 不发送或匹配 action，因此不会再产生“验证码来源或用途不匹配”。注册和登录切换时清空 token，每次提交后重置组件，过期及旧组件延迟回调不能恢复旧 token；无效或重复使用的 token 仍由 Siteverify 拒绝。
 
 升级时需同时更新 Go 服务、管理前端与 AzurPilot 玩家前端，认证请求字段已改为 `recaptchaToken`。在服务器 `.env` 设置与上述 site key 配套的 Google `RECAPTCHA_SECRET_KEY`，移除旧验证码变量；原 Cloudflare secret 无法用于 Google。
 
@@ -226,6 +226,8 @@ curl -i https://stock.nanoda.work/api/meta
 ```
 
 如果源站 nginx 已返回 200、公网仍返回 404，检查当前 CDN / DNS 是否指向这台服务器，以及回源 Host 是否为 `stock.nanoda.work`；修复后再清除可能缓存的旧 404。控制台加载后若登录验证码失败，检查 `www.recaptcha.net` 及官方静态资源的网络访问、Google site key 与服务器 `RECAPTCHA_SECRET_KEY` 是否配套，并重新完成人机验证；无需配置验证码域名白名单。
+
+如果控制台已返回 200，但验证码区域空白或提示加载超时，检查浏览器是否报告 CSP 拦截 `www.gstatic.cn/recaptcha/`。`www.recaptcha.net/recaptcha/api.js` 会动态加载该官方依赖；只允许 `www.gstatic.com/recaptcha/` 会导致依赖无法执行。管理页面 CSP 由 Go 后端设置，此项修复只需重新构建并部署交易所后端、重启 `mingmiao-exchange` 服务，然后刷新页面；无需重新部署管理前端或 AzurPilot。若使用完整发布包，现有打包和部署脚本仍会同时处理 Go 与管理前端，但最小必要更新范围仅为 Go 后端。若 nginx 或 CDN 额外设置了 CSP，也需检查其策略；多条 CSP 会同时生效，增加一条宽松策略不能解除另一条策略的拦截。
 
 如果部署时 nginx 启动失败并报告 `Address already in use`，但 `ss -ltnp` 显示端口由已有 nginx 占用，可能存在未被 `nginx.service` 管理的 master，或 `/run/nginx.pid` 为空 / 过期。新版脚本会在 systemd 重载失败或服务未激活时扫描 `/proc`，核对 nginx 可执行文件、网络命名空间和 `/etc/nginx/nginx.conf`，对唯一匹配的 master 发送 HUP；不会写入 PID 文件或让 systemd 接管现有进程。只有没有 nginx master 时才尝试 systemd 启动，识别不明确时直接报错。原有启动 / 保活机制仍需维护；若要迁移到 systemd，先用 `ps` 和 `/proc/<master-pid>/cgroup` 确认现有启动来源，再安排迁移，避免影响同机其他站点。
 

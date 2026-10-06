@@ -150,7 +150,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ancestors = append(ancestors, strings.TrimSpace(v))
 		}
 	}
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://www.recaptcha.net/recaptcha/ https://www.gstatic.com/recaptcha/; frame-src https://www.recaptcha.net/recaptcha/; connect-src 'self' https://www.recaptcha.net/recaptcha/; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors "+strings.Join(ancestors, " "))
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self' https://www.recaptcha.net/recaptcha/ https://www.gstatic.com/recaptcha/ https://www.gstatic.cn/recaptcha/; frame-src https://www.recaptcha.net/recaptcha/; connect-src 'self' https://www.recaptcha.net/recaptcha/; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors "+strings.Join(ancestors, " "))
 	if origin := r.Header.Get("Origin"); origin != "" {
 		if !s.allowed(origin) {
 			s.error(w, 403, fail("ORIGIN_DENIED", "访问来源未授权"))

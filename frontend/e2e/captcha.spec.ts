@@ -1,6 +1,32 @@
 import {expect,test} from '@playwright/test'
 import {completeCaptcha} from './recaptcha'
 
+test('管理页面 CSP 允许 reCAPTCHA 国内资源并限制资源路径',async({page},testInfo)=>{
+  const allowed='https://www.gstatic.cn/recaptcha/mmex-csp-probe.js'
+  const blocked='https://www.gstatic.cn/mmex-csp-probe.js'
+  for(const url of [allowed,blocked]){
+    await page.route(url,route=>route.fulfill({contentType:'application/javascript',body:'/* CSP 资源加载探针，不生成验证码 token。 */'}))
+  }
+  // 直接访问 Go 返回的页面；Vite 开发页面不携带生产 CSP。
+  const response=await page.goto(`http://127.0.0.1:${process.env.MOCK_API_PORT??8080}/console`)
+  expect(response?.ok()).toBeTruthy()
+  const results=await page.evaluate(async urls=>{
+    const probe=(src:string)=>new Promise<boolean>(resolve=>{
+      const script=document.createElement('script')
+      const finish=(loaded:boolean)=>{clearTimeout(timeout);script.remove();resolve(loaded)}
+      const timeout=setTimeout(()=>finish(false),5000)
+      script.onload=()=>finish(true)
+      script.onerror=()=>finish(false)
+      script.src=src
+      document.head.append(script)
+    })
+    return {allowed:await probe(urls.allowed),blocked:await probe(urls.blocked)}
+  },{allowed,blocked})
+  expect(results).toEqual({allowed:true,blocked:false})
+  await expect(page.frameLocator('iframe[title="reCAPTCHA"]').getByRole('checkbox')).toBeVisible({timeout:20000})
+  await page.screenshot({path:testInfo.outputPath('captcha-csp.png'),fullPage:true})
+})
+
 test('管理员认证失败后清空验证码，使用新 token 重试',async({page})=>{
   const errors:string[]=[],requests:string[]=[]
   page.on('pageerror',error=>errors.push(error.message))
