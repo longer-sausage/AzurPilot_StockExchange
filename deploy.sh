@@ -8,7 +8,7 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/mingmiao-exchange}"
 RELEASE_ARCHIVE="${1:-}"
 # PID 文件可能被面板或失败的 nginx 启动清空，直接核对 /proc 中的实际 master。
 # 返回 3 表示没有 nginx master；其他失败必须停止，不能再启动第二个 nginx。
-reload_existing_nginx() {
+find_existing_nginx_master() {
   local nginx_binary nginx_build default_conf='' net_namespace process_dir master_command executable config pid
   local -a matching_pids=() other_pids=()
   nginx_binary="$(readlink -f -- "$(command -v nginx)")" || return 1
@@ -45,10 +45,169 @@ reload_existing_nginx() {
   IFS= read -r -d '' master_command 2>/dev/null < "/proc/$pid/cmdline" || return 1
   executable="$(readlink "/proc/$pid/exe" 2>/dev/null)" || return 1
   [[ "$master_command" == 'nginx: master process '* && "${executable% (deleted)}" == "$nginx_binary" ]] || return 1
+  printf '%s\n' "$pid"
+}
+reload_existing_nginx() {
+  local pid
+  pid="$(find_existing_nginx_master)" || return $?
   kill -HUP "$pid" || return 1
   echo "已向现有 nginx master（PID $pid）发送重载信号，保留其原有管理方式。"
 }
+# nginx 的连接槽与系统文件描述符是两套限制；只调 worker_connections 仍可能在 1024 处失败。
+# 使用现有硬上限，不改变连接槽、CPU / 内存配置，也不重启或接管 nginx master。
+configure_nginx_nofile() {
+  local master='' status
+  if master="$(find_existing_nginx_master)"; then :; else
+    status=$?
+    [[ $status -eq 3 ]] || return "$status"
+  fi
+  NGINX_NOFILE_BACKUP="$(python3 - "$master" <<'PY'
+import os, pathlib, re, resource, shlex, shutil, signal, subprocess, sys, tempfile
+
+descriptor = None
+try:
+    descriptor = os.pidfd_open(os.getpid())
+    signal.pidfd_send_signal(descriptor, 0)
+except (AttributeError, OSError):
+    raise SystemExit('nginx 安全重载核验需要 Python 3.9+ 和支持 pidfd 的 Linux 5.3+；未修改配置。')
+finally:
+    if descriptor is not None: os.close(descriptor)
+conf = pathlib.Path('/etc/nginx/nginx.conf').resolve()
+original = conf.read_text()
+dump = subprocess.check_output(['nginx', '-T'], stderr=subprocess.DEVNULL, text=True)
+lexer = shlex.shlex(dump, posix=True, punctuation_chars='{};')
+lexer.whitespace_split = True
+tokens = list(lexer)
+def numbers(name):
+    return [int(tokens[i+1]) for i, token in enumerate(tokens[:-1]) if token == name and
+            (i == 0 or tokens[i-1].endswith((';', '{', '}'))) and tokens[i+1].isdigit()]
+connections = max(numbers('worker_connections') or [512])
+configured = numbers('worker_rlimit_nofile')
+hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+if sys.argv[1]:
+    limits = pathlib.Path('/proc/'+sys.argv[1]+'/limits').read_text()
+    hard = int(re.search(r'^Max open files\s+\S+\s+(\d+)', limits, re.M)[1])
+kernel_max = int(pathlib.Path('/proc/sys/fs/nr_open').read_text())
+available = kernel_max if hard == resource.RLIM_INFINITY else min(hard, kernel_max)
+target = max(available, *(int(v) for v in configured)) if configured else available
+if target > kernel_max or target < connections + 64:
+    raise SystemExit('nginx 文件描述符硬上限不足以覆盖连接槽及日志等文件；请先检查服务 LimitNOFILE 和内核 fs.nr_open。')
+if configured and configured[0] >= target:
+    print('nginx worker 文件描述符配置已覆盖连接槽，无需修改。', file=sys.stderr)
+    sys.exit(0)
+pattern = r'(?m)(^|[;{}])(\s*)worker_rlimit_nofile\s+\d+\s*;'
+updated, count = re.subn(pattern, lambda m: m[1]+m[2]+'worker_rlimit_nofile '+str(target)+';', original)
+if configured and count != 1:
+    raise SystemExit('worker_rlimit_nofile 定义在外部 include；请在原文件调整，未修改任何配置。')
+if not count:
+    updated = '# 让 worker 使用现有文件描述符硬上限，避免 EMFILE 导致 TLS 握手失败。\nworker_rlimit_nofile '+str(target)+';\n'+original
+metadata = conf.stat()
+fd, candidate_name = tempfile.mkstemp(prefix='.mmex-nofile-', dir=conf.parent)
+candidate = pathlib.Path(candidate_name)
+try:
+    with os.fdopen(fd, 'w') as output:
+        output.write(updated)
+    os.chmod(candidate, metadata.st_mode & 0o7777)
+    os.chown(candidate, metadata.st_uid, metadata.st_gid)
+    subprocess.run(['nginx', '-t', '-c', str(candidate)], check=True)
+    if conf.read_text() != original:
+        raise SystemExit('nginx.conf 在检查期间发生变化，未覆盖配置。')
+    backup_dir = pathlib.Path('/var/backups/mingmiao-nginx')
+    backup_dir.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(backup_dir, 0o700)
+    backup_fd, backup_name = tempfile.mkstemp(prefix='nginx.conf.', dir=backup_dir)
+    os.close(backup_fd)
+    shutil.copy2(conf, backup_name)
+    os.replace(candidate, conf)
+    print(backup_name)
+    print(f'nginx worker_rlimit_nofile={target}，worker_connections={connections}；备份：{backup_name}', file=sys.stderr)
+finally:
+    candidate.unlink(missing_ok=True)
+PY
+)" || return 1
+}
+snapshot_nginx_workers() {
+  local master status
+  if master="$(find_existing_nginx_master)"; then
+    NGINX_WORKERS_BEFORE="$(cat "/proc/$master/task/$master/children")" || return 1
+  else
+    status=$?
+    [[ $status -eq 3 ]] || return "$status"
+    NGINX_WORKERS_BEFORE=''
+  fi
+}
+verify_nginx_reload() {
+  local master
+  master="$(find_existing_nginx_master)" || return $?
+  python3 - "$master" "${NGINX_WORKERS_BEFORE:-}" <<'PY'
+import os, pathlib, re, shlex, signal, subprocess, sys, time
+
+master = int(sys.argv[1])
+previous = set(sys.argv[2].split())
+dump = subprocess.check_output(['nginx', '-T'], stderr=subprocess.DEVNULL, text=True)
+lexer = shlex.shlex(dump, posix=True, punctuation_chars='{};')
+lexer.whitespace_split = True
+tokens = list(lexer)
+def numbers(name):
+    return [int(tokens[i+1]) for i, token in enumerate(tokens[:-1]) if token == name and
+            (i == 0 or tokens[i-1].endswith((';', '{', '}'))) and tokens[i+1].isdigit()]
+connections = max(numbers('worker_connections') or [512])
+configured = numbers('worker_rlimit_nofile')
+required = max(connections + 64, *(int(v) for v in configured)) if configured else connections + 64
+for attempt in range(50):
+    workers = []
+    for proc in pathlib.Path('/proc').iterdir():
+        if not proc.name.isdigit() or proc.name in previous: continue
+        try:
+            command = (proc/'cmdline').read_bytes().split(b'\0')[0]
+            parent = int((proc/'stat').read_text().split(') ', 1)[1].split()[1])
+            if command != b'nginx: worker process' or parent != master: continue
+            limit = re.search(r'^Max open files\s+(\d+)\s+(\d+)', (proc/'limits').read_text(), re.M)
+            workers.append((proc.name, int(limit[1]), int(limit[2])))
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    if workers and all(soft >= required for _, soft, _ in workers):
+        # FD 耗尽可能损坏控制通道，使旧代收不到 master 的退出通知。
+        # 新代就绪后，仅向同一 master 下仍接收请求的旧 worker 补发优雅退出信号。
+        # pidfd 确保核对身份后 PID 被重用也不会误伤其他进程。
+        for pid in previous:
+            descriptor = None
+            try:
+                descriptor = os.pidfd_open(int(pid))
+                proc = pathlib.Path('/proc/'+pid)
+                if (proc/'cmdline').read_bytes().split(b'\0')[0] != b'nginx: worker process': continue
+                if int((proc/'stat').read_text().split(') ', 1)[1].split()[1]) != master: continue
+                # 部分容器禁止 root 读取其他 UID 的 /proc/<pid>/exe；父进程及标题已限定为该 master 的 worker。
+                if (proc/'comm').read_text().strip() != 'nginx': continue
+                signal.pidfd_send_signal(descriptor, signal.SIGQUIT)
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            finally:
+                if descriptor is not None: os.close(descriptor)
+        print(f'已验证 nginx 活跃 worker 的文件描述符上限（要求至少 {required}）：{workers}')
+        sys.exit(0)
+    time.sleep(0.2)
+raise SystemExit(f'nginx 活跃 worker 上限未生效：{workers}；检查 setrlimit 错误、master 权限和实际配置。')
+PY
+}
 if [[ $EUID -ne 0 ]]; then echo '请使用 sudo bash deploy.sh [release.tar.gz]'; exit 1; fi
+if [[ "$RELEASE_ARCHIVE" == --nginx-only ]]; then
+  # 已安装服务器可单独修复 nginx；无需读取应用凭据、构建 release 或停止交易所。
+  nginx -t
+  find_existing_nginx_master >/dev/null || { echo '单独修复需要已运行且可确认的 nginx master。' >&2; exit 1; }
+  configure_nginx_nofile
+  snapshot_nginx_workers
+  if ! reload_existing_nginx || ! verify_nginx_reload; then
+    if [[ -n "$NGINX_NOFILE_BACKUP" ]]; then
+      cp -p -- "$NGINX_NOFILE_BACKUP" /etc/nginx/nginx.conf
+      nginx -t && reload_existing_nginx
+      echo "已恢复修改前的 nginx 配置；备份：$NGINX_NOFILE_BACKUP" >&2
+    fi
+    exit 1
+  fi
+  echo 'nginx 文件描述符修复完成；请继续验收源站双栈 TLS、API、静态资源和公网链路。'
+  exit 0
+fi
 if [[ ! -f "$ENV_FILE" ]]; then cp "$ROOT_DIR/.env.example" "$ENV_FILE"; chmod 600 "$ENV_FILE"; echo "已创建 $ENV_FILE，请填写密钥、密码及外部 TLS 证书路径后重新执行。"; exit 1; fi
 # 只解析 KEY=VALUE，不执行环境文件中的 shell 命令。
 while IFS= read -r env_line || [[ -n "$env_line" ]]; do
@@ -83,6 +242,7 @@ openssl pkey -in "$TLS_KEY_FILE" -passin pass: -noout >/dev/null 2>&1 || { echo 
 CERT_PUBLIC_HASH="$(openssl x509 -in "$TLS_CERT_FILE" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum)"
 KEY_PUBLIC_HASH="$(openssl pkey -in "$TLS_KEY_FILE" -passin pass: -pubout -outform DER | sha256sum)"
 [[ "$CERT_PUBLIC_HASH" == "$KEY_PUBLIC_HASH" ]] || { echo 'TLS 证书与私钥不匹配'; exit 1; }
+configure_nginx_nofile
 BUILD_DIR="$ROOT_DIR"
 if [[ -n "$RELEASE_ARCHIVE" ]]; then
   BUILD_DIR="$(mktemp -d /tmp/mmex-release.XXXXXX)"
@@ -246,6 +406,7 @@ systemctl daemon-reload
 systemctl enable mingmiao-exchange
 systemctl restart mingmiao-exchange
 # 已有 nginx 可能由面板启动或 PID 文件损坏，不启动第二个 master。
+snapshot_nginx_workers
 if systemctl is-active --quiet nginx && systemctl reload nginx; then
   systemctl enable nginx
 elif reload_existing_nginx; then
@@ -259,6 +420,7 @@ else
     exit 1
   fi
 fi
+verify_nginx_reload
 for attempt in {1..15}; do if curl -fsS http://127.0.0.1:8080/healthz >/dev/null; then break; fi; sleep 1; done
 curl -fsS http://127.0.0.1:8080/healthz >/dev/null
 # 验证运行中的后端确为本次发布的二进制，而不只是磁盘文件已替换。

@@ -119,7 +119,7 @@ sudo bash deploy.sh mingmiao-exchange.tar.gz
 
 脚本强制使用外部证书，不安装 certbot、不签发证书、不设置续期任务。未配置证书、文件不可读、已过期、域名不符或公私钥不匹配会拒绝部署。证书校验在停服及替换文件之前完成；HTTP 自动跳转 HTTPS。证书由外部流程维护，更新后执行 `nginx -t && systemctl reload nginx`。使用 Cloudflare 代理时设置 **Full (strict)**。脚本从 Cloudflare 官方拉取受信代理网段，nginx 只信任这些来源的 `CF-Connecting-IP`，Go 只信任本机反代的真实 IP 头。
 
-程序安装至 `/opt/mingmiao-exchange`，数据库独立保留于 `data/exchange.db`，每次升级停服后连同 WAL 备份。systemd 设置开机启动、自动重启和权限隔离；不再设置固定 CPU、Go 内存、进程内存或任务数上限，旧环境文件里的 `GOMAXPROCS=1` / `GOMEMLIMIT=64MiB` 也不再被部署脚本写入服务环境。Go 使用系统默认调度，认证按启动时可用 CPU 配置并发。数据库使用 WAL / NORMAL、单连接、2 MiB 页缓存；关闭系统时先完成在途请求。nginx 复用上游连接及 TLS 会话，恢复真实访问 IP 并保留连接超时保护；同步、交易和历史补传不设置请求频率或条数配额，事件流关闭代理缓冲。
+程序安装至 `/opt/mingmiao-exchange`，数据库独立保留于 `data/exchange.db`，每次升级停服后连同 WAL 备份。systemd 设置开机启动、自动重启和权限隔离；不再设置固定 CPU、Go 内存、进程内存或任务数上限，旧环境文件里的 `GOMAXPROCS=1` / `GOMEMLIMIT=64MiB` 也不再被部署脚本写入服务环境。Go 使用系统默认调度，认证按启动时可用 CPU 配置并发。数据库使用 WAL / NORMAL、单连接、2 MiB 页缓存；关闭系统时先完成在途请求。nginx 复用上游连接及 TLS 会话，恢复真实访问 IP 并保留连接超时保护；同步、交易和历史补传不设置请求频率或条数配额，事件流关闭代理缓冲。部署在停服前按现有 nginx master 的文件描述符硬上限（首次安装使用部署进程硬上限，均受内核 `fs.nr_open` 约束）设置 `worker_rlimit_nofile`，保留已有更高配置和 `worker_connections`；重载后核验活跃 worker 的实际上限，避免只提高连接槽却仍受 1024 软上限限制。
 
 ```sh
 systemctl status mingmiao-exchange
@@ -129,6 +129,41 @@ sudo systemctl restart mingmiao-exchange
 ```
 
 环境文件按字面值解析，不执行 shell 代码。程序日志不输出密码、上传凭据、验证码 token 或数据库账户内容。生产脚本拒绝 `MOCK_MODE=true`；程序的 mock 监听也只能是回环地址。
+
+## TLS 525 排查与单独修复 nginx
+
+Cloudflare 的 [525 定义](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-525/) 是边缘节点与源站的 TLS 握手失败。Go 的 `/healthz` 为 200 或 `nginx -t` 通过，都不能单独证明公网 TLS 可用。先核对同一故障时段的 nginx 错误日志、源站双栈握手和公网响应；日志不要整份复制到聊天，以免包含请求中的凭据。
+
+2026-10-07 的实际故障为：`worker_connections=5120`，但 worker 的文件描述符软上限仍为 1024，实际已使用 1021 个描述符；nginx 反复记录 `accept4() failed (24: Too many open files)`，公网实际返回 525。上游连接也占用描述符，因此有效容量不能只按浏览器连接数计算。[nginx 官方说明](https://nginx.org/en/docs/ngx_core_module.html#worker_connections) 明确指出连接槽包含代理上游，实际连接数也受文件描述符上限约束。
+
+只修复已安装服务器上的这类限制错配时，把新版 `deploy.sh` 上传到服务器暂存目录，在该目录执行：
+
+```sh
+sudo nginx -t
+sudo systemctl show nginx -p MainPID -p LimitNOFILE -p LimitNOFILESoft
+sudo bash ./deploy.sh --nginx-only
+```
+
+该模式无需 `.env`、应用凭据或发布包，先检查现有配置并确认 master 身份，再验证候选配置、备份到 `/var/backups/mingmiao-nginx/`，原子替换主配置，对现有 master 发送 HUP，并等待新代 worker 的实际文件描述符上限生效。描述符耗尽也可能使旧代的控制通道出错；确认新代启动后，向同一 master 下仍接收请求的旧 worker 补发 `SIGQUIT`，按 [nginx 优雅退出语义](https://nginx.org/en/docs/control.html) 排空旧连接。用 Linux pidfd、父进程和 worker 身份核验避免 PID 重用误伤；需要 Python 3.9+ / Linux 5.3+，能力不足会在修改配置前报错。重复执行不重复改写配置或创建备份；保留原有 nginx 启动管理方式和同机站点。若重载或进程核验失败，恢复本次修改前的主配置并尝试重新加载，命令返回失败；不要将失败视作验收通过。
+
+它不修改连接槽数量、CPU / 内存配额、证书、Go 服务、前端或数据库。**交易所后端、管理前端、AzurPilot 玩家前端和 AzurPilot 后端均不需要重新构建、部署或重启；必要操作仅为更新 nginx 配置并平滑重载。** 运行代码与接口未变，相对于修改前的仓库版本，各前后端组合及已有会话的兼容关系不受影响，无数据迁移或发布顺序要求。普通完整部署也执行相同前置配置和运行进程核验，但仍会按原流程安装两端并重启 Go；修复本问题不必重跑整包部署。
+
+若硬上限不足以覆盖连接槽和额外日志等描述符，脚本提前报错；若较低 `worker_rlimit_nofile` 位于外部 include，也会提前报错，需核实输出并在原配置文件调整。`worker_connections` 仍是 nginx 必需的全进程容量参数；本修复保留该值，不自动扩大内存预分配。负载超过连接槽容量时应依据实际连接与上游数量评估容量，不能声称任何负载下都不会出现握手失败。
+
+修复后在服务器验证实际 TLS 和路由。公共可信证书不使用 `-k`；Origin CA 证书应使用 `--cacert <对应的CA文件>`：
+
+```sh
+for address in 127.0.0.1 '[::1]'; do
+  for path in /healthz /api/meta /console; do
+    curl --noproxy '*' -fsS --max-time 10 \
+      --resolve "stock.nanoda.work:443:$address" "https://stock.nanoda.work$path" -o /dev/null
+  done
+done
+curl --noproxy '*' -4 -fsS --max-time 15 https://stock.nanoda.work/healthz
+curl --noproxy '*' -6 -fsS --max-time 15 https://stock.nanoda.work/healthz
+```
+
+另外核对 `/console` HTML 引用的静态资源、TLS 1.2 / 1.3 握手及重载后新增日志，确认不再新增 `Too many open files` 或 `worker_connections are not enough`。保持 Cloudflare **Full (strict)**，外部证书的有效期、域名、密钥配对和维护责任仍适用；此修复不替代证书维护、源站路由或 Cloudflare 配置检查。
 
 ## 前端部署与 `/console` 404 排查
 
@@ -245,7 +280,7 @@ curl -kI --resolve 'stock.nanoda.work:443:[::1]' https://stock.nanoda.work/conso
 
 单进程内存账本 + SQLite 原子事务，提交失败恢复内存。事务只复制、备份和落盘受影响账户；证券索引持仓与挂单订阅者。成功提交后立即唤醒 `/api/events`，每秒时钟事件更新报价时效、赛期和计费估值；AzurPilot 后端共享一个 SSE 连接，通过 `stock` WebSocket 主题通知页面，市场、账户、委托、排行榜与图表随变更读取。请求正在执行时合并通知，并在完成后继续读取，避免丢失最后一次变更；断线自动重连并重新获取完整状态。行情和排行榜继续共享按版本及秒更新的编码缓存与 ETag。风控、计息及交收每秒检查，仅遍历需要处理的账户；月赛结算统一处理全部玩家。
 
-Go 与 nginx 不再设置请求次数、连接数或请求正文的固定配额；AzurPilot WebSocket 的交易请求也不计入通用请求频率限制。验证码网络并发按 `max(4, 2×GOMAXPROCS)`、bcrypt 按 `GOMAXPROCS` 进行实际资源准入，繁忙返回 503。保留密码哈希、真实 Siteverify 成功校验、实例签名、来源白名单、幂等回执和整数账本安全核验。委托、逐笔成交、挂单、报价和赛季列表均完整返回；曾从账户快照裁掉的旧委托由私有 `/api/orders` 从持久回执恢复。
+Go 与 nginx 不设置按客户端计数的请求次数、连接数或请求正文固定配额；nginx 的 `worker_connections` 和系统文件描述符上限仍约束全进程容量，详见上述 TLS 525 排查。AzurPilot WebSocket 的交易请求也不计入通用请求频率限制。验证码网络并发按 `max(4, 2×GOMAXPROCS)`、bcrypt 按 `GOMAXPROCS` 进行实际资源准入，繁忙返回 503。保留密码哈希、真实 Siteverify 成功校验、实例签名、来源白名单、幂等回执和整数账本安全核验。委托、逐笔成交、挂单、报价和赛季列表均完整返回；曾从账户快照裁掉的旧委托由私有 `/api/orders` 从持久回执恢复。
 
 按诚实玩家假设使用实例自报行动力，不进行真实性验证。签名用于永久实例绑定和请求完整性；基本范围、格式、顺序检查只防止传输/账本错误。游戏禁止自我交易、同记录改价和倒序数据。未接入游戏账号身份证明、真实交易所行情、真实资金或交易所节假日服务。
 
@@ -275,4 +310,4 @@ AzurPilot 的独立同步测试为 `uv run python -m unittest tests.test_stock_e
 - [FINRA 保证金参考](https://www.finra.org/rules-guidance/notices/21-12)：初始和维持保证金区分。
 - [SEC T+1 交收](https://www.sec.gov/newsroom/press-releases/2024-62)：美股现金交收参考。
 
-部署配置验证：`python scripts/check-deploy.py`（需已运行的 Docker）。使用临时 nginx 容器测试缺证书、错域名、错私钥及有效证书，并对脚本生成的实际 nginx 配置执行 `nginx -t`，不改宿主服务。
+部署配置验证：`python scripts/check-deploy.py`（需已运行的 Docker；准备临时测试镜像时需联网安装 Python，运行用例全部断网）。使用临时 nginx 容器测试缺证书、错域名、错私钥及有效证书，并对脚本生成的实际 nginx 配置执行 `nginx -t`，不改宿主服务；实际重现 1024 文件描述符软上限引起的 TLS 失败，修复后保持 1200 个双栈 TLS 连接，核验平滑重载、旧代排空、幂等、nginx 重启恢复、硬上限不足或外部定义时不修改配置，以及核验失败的配置回滚。CI 执行同一验证入口。
