@@ -105,6 +105,33 @@
 
 ## 部署与恢复
 
+### SSH 连接与免密提权
+
+- 当前开发环境已配置 SSH 别名 `exchange`，可在本地终端通过 `ssh exchange` 连接交易所服务器；复用本机 SSH 配置，不在仓库中记录真实地址、登录凭据或私钥。该别名属于本机配置，其他环境使用前须确认已配置。
+- 服务器已配置免密 sudo。自动执行远端命令时使用 `ssh -o BatchMode=yes -o ConnectTimeout=10 exchange '<远端命令>'`，需要提权的命令加 `sudo -n`，使认证或提权失败时直接报错，避免等待密码输入。`ConnectTimeout` 只限制连接建立时间，不限制远端命令运行时间。
+- 可直接执行任务所需的只读诊断；部署、停止或重启服务、修改配置及写入生产数据须属于用户已授权的工作范围，已有授权无需重复确认。连接权限与免密提权能力本身不代表这些变更已获授权。
+
+以下命令在本地终端执行，仅连接或读取服务器状态：
+
+```powershell
+# 交互连接；退出远端会话使用 exit
+ssh exchange
+
+# 检查非交互连接和免密提权；成功输出 0
+ssh -o BatchMode=yes -o ConnectTimeout=10 exchange 'sudo -n id -u'
+
+# 查看交易所服务状态与本机健康检查
+ssh -o BatchMode=yes -o ConnectTimeout=10 exchange 'systemctl status mingmiao-exchange --no-pager'
+ssh -o BatchMode=yes -o ConnectTimeout=10 exchange 'curl -fsS --max-time 10 http://127.0.0.1:8080/healthz'
+```
+
+- 远端服务名为 `mingmiao-exchange`；默认安装目录为 `/opt/mingmiao-exchange`，管理前端为其中的 `frontend/dist/`，数据库为 `data/exchange.db`。执行变更前核对实际安装路径和当前服务配置；自定义 `INSTALL_DIR` 时相应替换路径，不假定服务器源码或上传目录与安装目录相同。
+- 文件传输可复用 `scp` 的 `exchange:` 目标，先上传到已核对的暂存目录，再按 `README.md` 的发布包或仅管理前端流程安装。仅上传文件不会自动更新正在运行的后端或安装目录中的前端。
+- PowerShell 中用单引号包住远端命令，避免 `$` 等内容先被本地展开；远端命令由服务器 shell 解析，涉及路径、重定向或多步操作时明确执行目录、提权范围和失败处理。
+- 保留 SSH 主机密钥校验，不以关闭校验解决连接失败；认证或 `sudo -n` 失败时核对并报告原因，不擅自修改 SSH 配置、密钥或 sudoers。诊断输出须遵守前述隐私规则，不整份输出 `.env`、`exchange.env`、私钥或生产数据库，也不把含敏感信息的日志直接写入聊天。
+
+### 部署操作与恢复要求
+
 - 沿用现有 Debian amd64 / arm64 预构建包部署方式，保留包校验和运行中二进制核验。数据库独立于发布产物，升级停服后连同 WAL 备份；说明迁移是否允许旧二进制回滚，必要时通过备份恢复。
 - 部署前验证证书及已有 nginx 配置；使用外部提供的证书，不擅自引入签发或续期流程。保留同机其他站点和 nginx 原有管理方式，不杀死无关进程或启动第二个 master。
 - `/healthz` 成功不等于前端或公网链路已更新。实际部署验收同时检查 API、`/console`、静态资源及源站 IPv4 / IPv6，再按任务验证公网链路；SSE 路径保留关闭代理缓冲的配置。
