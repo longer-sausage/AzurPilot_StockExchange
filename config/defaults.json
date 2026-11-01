@@ -1,0 +1,23 @@
+{
+	"activeMarketId": "meow",
+	"startDay": 5,
+	"endDaysFromLast": 4,
+	"delistThreshold": 500,
+  "initialCash": 2000000000,
+  "issuedShares": 10000,
+  "hourlyVolume": 1000,
+  "borrowShares": 10000,
+  "borrowHourlyVolume": 1000,
+  "premiumPPM": 50000,
+  "borrowAnnualPPM": 80000,
+  "commissionPPM": 300,
+  "minCommission": 500,
+  "quoteTTLSeconds": 86400,
+  "taxBrackets": [
+    { "upTo": 3000000000, "ratePPM": 0 },
+    { "upTo": 8000000000, "ratePPM": 80000 },
+    { "upTo": 10000000000, "ratePPM": 160000 },
+    { "upTo": 0, "ratePPM": 320000 }
+  ],
+  "paused": false
+}

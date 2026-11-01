@@ -1,540 +1,496 @@
 package exchange
 
 import (
-	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-type fixture struct {
-	e             *Engine
-	now           time.Time
-	owner, trader *Player
-	upload        string
-	path          string
+type memoryStore struct {
+	mu       sync.Mutex
+	entities map[string]Entity
+	history  map[int64]map[int64]int64
+	fail     bool
+	writes   int
 }
 
-func setup(t *testing.T) *fixture {
-	return setupAt(t, time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC))
+func newMemoryStore() *memoryStore {
+	return &memoryStore{entities: map[string]Entity{}, history: map[int64]map[int64]int64{}}
 }
-func setupAt(t *testing.T, now time.Time) *fixture {
+func (s *memoryStore) Load() ([]Entity, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []Entity{}
+	for _, v := range s.entities {
+		x := v
+		x.Data = append([]byte{}, v.Data...)
+		out = append(out, x)
+	}
+	return out, nil
+}
+func (s *memoryStore) Commit(v []Entity, h []HistoryWrite) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.fail {
+		return errors.New("injected commit failure")
+	}
+	s.writes++
+	for _, x := range v {
+		key := x.Kind + ":" + x.ID
+		if x.Delete {
+			delete(s.entities, key)
+		} else {
+			x.Data = append([]byte{}, x.Data...)
+			s.entities[key] = x
+		}
+	}
+	for _, x := range h {
+		if s.history[x.StockID] == nil {
+			s.history[x.StockID] = map[int64]int64{}
+		}
+		for _, p := range x.Points {
+			s.history[x.StockID][p.T] = p.P
+		}
+	}
+	return nil
+}
+func (s *memoryStore) Chart(id, from, to, interval int64) ([]Candle, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	times := []int64{}
+	for t := range s.history[id] {
+		if t >= from && t <= to {
+			times = append(times, t)
+		}
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
+	out := []Candle{}
+	for _, t := range times {
+		p := s.history[id][t] * 100
+		offset := int64(0)
+		if interval >= 86400000 {
+			offset = 28800000
+		}
+		bucket := (t+offset)/interval*interval - offset
+		if len(out) == 0 || out[len(out)-1].T != bucket {
+			out = append(out, Candle{bucket, p, p, p, p, 1})
+		} else {
+			c := &out[len(out)-1]
+			c.H = max(c.H, p)
+			c.L = min(c.L, p)
+			c.C = p
+			c.N++
+		}
+	}
+	return out, nil
+}
+func (s *memoryStore) Manifest(id int64) ([]Month, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	times := []int64{}
+	for t := range s.history[id] {
+		times = append(times, t)
+	}
+	sort.Slice(times, func(i, j int) bool { return times[i] < times[j] })
+	buckets := map[string][]int64{}
+	months := []string{}
+	for _, t := range times {
+		month := time.UnixMilli(t).In(time.FixedZone("Asia/Shanghai", 8*3600)).Format("2006-01")
+		if _, ok := buckets[month]; !ok {
+			months = append(months, month)
+		}
+		buckets[month] = append(buckets[month], t)
+	}
+	out := []Month{}
+	for _, month := range months {
+		h := sha256.New()
+		for _, t := range buckets[month] {
+			fmt.Fprintf(h, "%d:%d\n", t, s.history[id][t])
+		}
+		out = append(out, Month{month, int64(len(buckets[month])), hex.EncodeToString(h.Sum(nil))})
+	}
+	return out, nil
+}
+func (s *memoryStore) Close() error { return nil }
+
+type fixture struct {
+	t        *testing.T
+	e        *Engine
+	store    *memoryStore
+	now      time.Time
+	instance InstanceRequest
+	private  ed25519.PrivateKey
+}
+
+func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{now: now, path: filepath.Join(t.TempDir(), "test.db")}
-	var err error
-	f.e, err = Open(f.path, func() time.Time { return f.now })
+	f := &fixture{t: t, store: newMemoryStore(), now: time.Date(2026, 11, 1, 2, 10, 0, 0, time.UTC)}
+	e, err := NewEngine(f.store, func() time.Time { return f.now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { f.e.Close() })
-	f.owner, f.upload, err = f.e.Register("股东猫猫", "test-password-123", 1000, f.now.Unix())
-	if err != nil {
+	f.e = e
+	s := DefaultSettings()
+	s.StartDay = 1
+	s.EndDaysFromLast = 0
+	s.DelistThreshold = 0
+	s.CommissionPPM = 0
+	s.MinCommission = 0
+	s.BorrowAnnualPPM = 0
+	s.PremiumPPM = 0
+	if err = e.SetSettings(s); err != nil {
 		t.Fatal(err)
 	}
-	f.trader, _, err = f.e.Register("交易猫猫", "test-password-123", 2000, f.now.Unix())
-	if err != nil {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	f.private = priv
+	f.instance = InstanceRequest{InstanceID: "12345678-1234-1234-1234-123456789012", PublicKey: base64.StdEncoding.EncodeToString(pub), Username: "测试股票"}
+	if _, err = e.InstanceRegister(f.sign("register", f.instance)); err != nil {
 		t.Fatal(err)
 	}
+	f.report(1000, false)
 	return f
 }
-func order(f *fixture, side, kind string, qty, price int64, cid string) OrderInput {
-	return OrderInput{ClientID: cid, StockID: f.owner.ID, Side: side, Kind: kind, TIF: "GTC", Quantity: qty, Limit: price}
+func (f *fixture) sign(action string, r InstanceRequest) InstanceRequest {
+	r.IssuedAt = f.now.Unix()
+	r.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(f.private, []byte(instanceCanonical(action, r))))
+	return r
 }
-func TestRegistrationNormalizationAndPrivateHashes(t *testing.T) {
-	f := setup(t)
-	if f.trader.Cash != InitialCash {
-		t.Fatal("初始资金错误")
+func (f *fixture) report(points int64, backfill bool) {
+	f.t.Helper()
+	r := f.instance
+	r.Username = ""
+	r.Points = []Point{{f.now.UnixMilli(), points}}
+	r.Backfill = backfill
+	if _, err := f.e.InstanceReport(f.sign("report", r)); err != nil {
+		f.t.Fatal(err)
 	}
-	if _, _, err := f.e.Register("股东猫猫", "test-password-123", 1, f.now.Unix()); err == nil {
-		t.Fatal("重复名称应失败")
+}
+func (f *fixture) account(name string) *Account {
+	f.t.Helper()
+	result, err := f.e.BotRegister("app:"+name, name, "register-"+name, strings.Repeat("s", 64))
+	if err != nil {
+		f.t.Fatal(err)
 	}
-	_, _, err := f.e.Register("ＡＢＣ猫", "test-password-123", 1, f.now.Unix())
+	a := f.e.accounts[result["accountId"].(int64)]
+	password := result["password"].(string)
+	if _, err = f.e.ChangePassword(a.ID, password, "NewStrong7!Password"); err != nil {
+		f.t.Fatal(err)
+	}
+	// 每个交易账户都完成独立实例股票绑定，交易测试只操作目标股票 1。
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	req := InstanceRequest{InstanceID: fmt.Sprintf("87654321-4321-4321-4321-%012d", a.ID), PublicKey: base64.StdEncoding.EncodeToString(pub), Username: "归属" + name, IssuedAt: f.now.Unix()}
+	req.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(priv, []byte(instanceCanonical("register", req))))
+	out, err := f.e.InstanceRegister(req)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if _, err = f.e.Bind(a.ID, out["bindingCode"].(string)); err != nil {
+		f.t.Fatal(err)
+	}
+	return f.e.accounts[a.ID]
+}
+func (f *fixture) bind(a *Account) {
+	f.t.Helper()
+	if own := f.e.accounts[a.ID].BoundStockID; own != 0 && own != 1 {
+		if err := f.e.DeleteStock(own); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	if _, err := f.e.Bind(a.ID, f.e.stocks[1].BindingCode); err != nil {
+		f.t.Fatal(err)
+	}
+}
+func (f *fixture) order(a *Account, side string, quantity, price int64, client string) *Order {
+	f.t.Helper()
+	p, err := f.e.Preview(a.ID, OrderInput{Stock: "MM000001", Side: side, Quantity: quantity, Price: price, ClientID: client})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	o, err := f.e.Confirm(a.ID, p.PreviewID)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return o
+}
+func mustCode(t *testing.T, err error, code string) {
+	t.Helper()
+	if err == nil || publicError(err).Code != code {
+		t.Fatalf("want %s, got %v", code, err)
+	}
+}
+
+func TestIssuanceHourlyAuctionPremiumTaxAndIdempotency(t *testing.T) {
+	f := newFixture(t)
+	a := f.account("买方账户")
+	s := f.e.Settings()
+	s.HourlyVolume = 10
+	s.IssuedShares = 15
+	s.PremiumPPM = 100000
+	s.TaxBrackets = []TaxBracket{{0, 80000}}
+	if err := f.e.SetSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	stock := *f.e.stocks[1]
+	stock.HourlyVolume = 10
+	stock.IssuedShares = 15
+	if err := f.e.UpdateStock(1, stock); err != nil {
+		t.Fatal(err)
+	}
+	o := f.order(a, "buy", 12, 120000, "buy-first-12")
+	if o.Filled != 10 || o.Remaining != 2 || o.Status != "pending" || o.AveragePrice != 105000 || o.Tax != 84000 {
+		t.Fatalf("unexpected initial fill %+v", o)
+	}
+	cash := f.e.accounts[a.ID].Cash
+	duplicate, err := f.e.Confirm(a.ID, o.PreviewID)
+	if err != nil || duplicate.ID != o.ID || f.e.accounts[a.ID].Cash != cash {
+		t.Fatal("duplicate confirm charged again", err)
+	}
+	p, err := f.e.Preview(a.ID, OrderInput{Stock: "1", Side: "buy", Quantity: 12, Price: 120000, ClientID: "buy-first-12"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err = f.e.Register("abc猫", "test-password-123", 1, f.now.Unix()); err == nil {
-		t.Fatal("全角大小写应归一")
+	duplicate, err = f.e.Confirm(a.ID, p.PreviewID)
+	if err != nil || duplicate.ID != o.ID {
+		t.Fatal("client id retry duplicated", err)
 	}
-	if _, err := f.e.Login("abc猫", "test-password-123"); err != nil {
+	high := f.order(a, "buy", 10, 130000, "buy-high-10")
+	f.now = f.now.Add(time.Hour)
+	if err = f.e.Tick(); err != nil {
 		t.Fatal(err)
 	}
-	raw, _, err := f.e.MarketJSON()
+	if f.e.orders[high.ID].Filled != 5 || f.e.orders[o.ID].Filled != 10 || f.e.stocks[1].Outstanding != 15 {
+		t.Fatal("higher price did not consume remaining inventory first")
+	}
+	if _, err = f.e.Cancel(a.ID, o.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = f.e.Cancel(a.ID, high.ID); err != nil {
+		t.Fatal(err)
+	}
+	if f.e.accounts[a.ID].Reserved != 0 {
+		t.Fatal("cancel did not release reservations")
+	}
+	bad := *f.e.stocks[1]
+	bad.IssuedShares = 14
+	mustCode(t, f.e.UpdateStock(1, bad), "STOCK_IN_USE")
+}
+func TestTaxBracketBoundaries(t *testing.T) {
+	s := DefaultSettings()
+	for _, tc := range []struct{ assets, want int64 }{{0, 0}, {3_000_000_000, 0}, {3_000_000_001, 80000}, {8_000_000_000, 80000}, {8_000_000_001, 160000}, {10_000_000_000, 160000}, {10_000_000_001, 320000}} {
+		if got := taxRate(s, tc.assets); got != tc.want {
+			t.Fatalf("assets=%d got %d want %d", tc.assets, got, tc.want)
+		}
+	}
+	if rate(1, 80000) != 1 {
+		t.Fatal("tax must round upward to a cent")
+	}
+}
+func TestShortBindingProfitLossAndIndependentLimits(t *testing.T) {
+	f := newFixture(t)
+	issuer := f.account("发行者")
+	trader := f.account("卖空者")
+	_, err := f.e.Preview(trader.ID, OrderInput{Stock: "1", Side: "short", Quantity: 1, Price: 100000, ClientID: "short-unbound"})
+	mustCode(t, err, "SHORT_UNBOUND")
+	f.bind(issuer)
+	_, err = f.e.Preview(issuer.ID, OrderInput{Stock: "1", Side: "buy", Quantity: 1, Price: 100000, ClientID: "self-trading"})
+	mustCode(t, err, "SELF_TRADE")
+	initialIssuer := f.e.accounts[issuer.ID].Cash
+	o := f.order(trader, "short", 10, 100000, "short-open-10")
+	if o.Filled != 10 || f.e.stocks[1].NormalUsed != 0 || f.e.stocks[1].BorrowUsed != 10 || f.e.accounts[issuer.ID].Cash != initialIssuer {
+		t.Fatal("short incorrectly transferred money or volume")
+	}
+	f.now = f.now.Add(time.Minute)
+	f.report(1100, false)
+	f.order(trader, "cover", 5, 110000, "cover-loss-5")
+	if got := f.e.accounts[issuer.ID].Cash - initialIssuer; got != 50000 {
+		t.Fatalf("issuer loss credit %d want 50000", got)
+	}
+	f.now = f.now.Add(time.Minute)
+	f.report(900, false)
+	f.order(trader, "cover", 5, 90000, "cover-profit-5")
+	if f.e.accounts[issuer.ID].Cash != initialIssuer+50000 || f.e.stocks[1].Borrowed != 0 {
+		t.Fatal("profitable cover debited issuer or leaked borrowed shares")
+	}
+	if f.e.accounts[trader.ID].Cash != f.e.Settings().InitialCash {
+		t.Fatalf("loss/profit did not cancel: %d", f.e.accounts[trader.ID].Cash)
+	}
+}
+func TestFailedCommitRollsBackAllAffectedEntitiesAndNotifications(t *testing.T) {
+	f := newFixture(t)
+	issuer := f.account("原子发行者")
+	trader := f.account("原子交易者")
+	f.bind(issuer)
+	f.order(trader, "short", 10, 100000, "atomic-short")
+	f.now = f.now.Add(time.Minute)
+	f.report(1100, false)
+	p, err := f.e.Preview(trader.ID, OrderInput{Stock: "1", Side: "cover", Quantity: 10, Price: 110000, ClientID: "atomic-cover"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), "Hash") || strings.Contains(string(raw), "password") {
-		t.Fatal("公开行情泄漏凭据")
+	beforeAccounts := string(encode(f.e.accounts))
+	beforeStock := string(encode(f.e.stocks))
+	beforeOrders := string(encode(f.e.orders))
+	version, ch := f.e.Changes()
+	f.store.fail = true
+	if _, err = f.e.Confirm(trader.ID, p.PreviewID); err == nil {
+		t.Fatal("expected injected transaction failure")
+	}
+	if string(encode(f.e.accounts)) != beforeAccounts || string(encode(f.e.stocks)) != beforeStock || string(encode(f.e.orders)) != beforeOrders {
+		t.Fatal("failed commit leaked cash/issuer/positions/inventory/order mutation")
+	}
+	version2, _ := f.e.Changes()
+	if version != version2 {
+		t.Fatal("version advanced on failed commit")
+	}
+	select {
+	case <-ch:
+		t.Fatal("notification fired before persistence")
+	default:
+	}
+	f.store.fail = false
+	o, err := f.e.Confirm(trader.ID, p.PreviewID)
+	if err != nil || o.Filled != 10 {
+		t.Fatal("retry did not execute", err)
+	}
+	restarted, err := NewEngine(f.store, func() time.Time { return f.now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encode(restarted.accounts)) != string(encode(f.e.accounts)) || string(encode(restarted.orders)) != string(encode(f.e.orders)) {
+		t.Fatal("restart lost committed ledger")
+	}
+	retry, err := restarted.Confirm(trader.ID, p.PreviewID)
+	if err != nil || retry.ID != o.ID {
+		t.Fatal("idempotency not recovered after restart", err)
 	}
 }
-func TestConcurrentOrdersIdempotencyAndRestart(t *testing.T) {
-	f := setup(t)
-	input := order(f, "buy", "market", 100, 0, "repeat_0001")
-	var wg sync.WaitGroup
-	errs := make(chan error, 8)
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() { defer wg.Done(); _, err := f.e.Submit(f.trader.ID, input); errs <- err }()
+func TestHistoryCorrectionBackfillAndSignedIdentity(t *testing.T) {
+	f := newFixture(t)
+	r := f.instance
+	r.Username = ""
+	r.Points = []Point{{f.now.UnixMilli() - 3600000, 700}, {f.now.UnixMilli(), 1000}, {f.now.UnixMilli(), 1100}}
+	r.Backfill = true
+	if _, err := f.e.InstanceReport(f.sign("report", r)); err != nil {
+		t.Fatal(err)
 	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
+	if f.e.stocks[1].Price != 110000 || len(f.store.history[1]) != 2 {
+		t.Fatal("same millisecond correction not upserted")
+	}
+	r.Points = []Point{{f.now.UnixMilli() - 7200000, 600}}
+	if _, err := f.e.InstanceReport(f.sign("report", r)); err != nil {
+		t.Fatal(err)
+	}
+	if f.e.stocks[1].Price != 110000 {
+		t.Fatal("historical backfill overwrote current quote")
+	}
+	candles, interval, err := f.e.Chart(1, f.now.UnixMilli()-9000000, f.now.UnixMilli(), 60)
+	if err != nil || interval != 60 || len(candles) != 3 {
+		t.Fatal(candles, interval, err)
+	}
+	manifest, err := f.e.InstanceManifest(f.sign("manifest", f.instance))
+	if err != nil || len(manifest) != 1 || manifest[0].Count != 3 {
+		t.Fatal(manifest, err)
+	}
+	tampered := f.sign("status", f.instance)
+	tampered.InstanceID = "22345678-1234-1234-1234-123456789012"
+	_, err = f.e.InstanceStatus(tampered)
+	mustCode(t, err, "INVALID_SIGNATURE")
+	changed := f.instance
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	changed.PublicKey = base64.StdEncoding.EncodeToString(pub)
+	_, err = f.e.InstanceStatus(f.sign("status", changed))
+	mustCode(t, err, "INVALID_SIGNATURE")
+	if _, ok := publicStock(f.e.stocks[1])["bindingCode"]; ok {
+		t.Fatal("public identity leaked")
+	}
+	before := len(f.store.history[1])
+	f.store.fail = true
+	r.Points = []Point{{f.now.UnixMilli() + 1000, 1200}}
+	if _, err = f.e.InstanceReport(f.sign("report", r)); err == nil {
+		t.Fatal("expected history persistence failure")
+	}
+	if len(f.store.history[1]) != before || f.e.stocks[1].Price != 110000 {
+		t.Fatal("history failure changed current state")
+	}
+}
+func TestForcedLiquidationProtectsIssuerAndBorrowAccrualRemainder(t *testing.T) {
+	f := newFixture(t)
+	issuer := f.account("强平发行者")
+	trader := f.account("强平交易者")
+	f.bind(issuer)
+	f.order(trader, "short", 10, 100000, "liquidate-short")
+	issuerCash := f.e.accounts[issuer.ID].Cash
+	f.now = f.now.Add(time.Minute)
+	f.report(4000, false)
+	if f.e.accounts[trader.ID].Positions[1].ShortQuantity != 0 || f.e.stocks[1].Borrowed != 0 {
+		t.Fatal("undercollateralized short not liquidated")
+	}
+	if f.e.accounts[issuer.ID].Cash <= issuerCash || f.e.accounts[trader.ID].Cash < 0 {
+		t.Fatal("liquidation failed issuer protection")
+	}
+	f.now = f.now.Add(time.Minute)
+	f.report(1000, false)
+	f.order(trader, "short", 1, 100000, "interest-short")
+	s := f.e.Settings()
+	s.BorrowAnnualPPM = 1
+	if err := f.e.SetSettings(s); err != nil {
+		t.Fatal(err)
+	}
+	before := f.e.accounts[trader.ID].Cash
+	f.now = f.now.Add(time.Second)
+	if err := f.e.transaction(func(m *mutation) error { return m.accrue(m.account(trader.ID), 1, f.now.UnixMilli()) }); err != nil {
+		t.Fatal(err)
+	}
+	if f.e.accounts[trader.ID].Cash != before || f.e.accounts[trader.ID].Positions[1].BorrowRemainder == 0 {
+		t.Fatal("fractional borrow charge was lost")
+	}
+}
+func TestSettingsDefaultFileAndNoIdleWrites(t *testing.T) {
+	store := newMemoryStore()
+	now := time.Now()
+	e, err := NewEngine(store, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = e.InitializeDefaults("../../config/defaults.json"); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(e.Settings())
+	if err != nil || !strings.Contains(string(raw), "\"issuedShares\":10000") {
+		t.Fatal(err)
+	}
+	if err = e.Tick(); err != nil {
+		t.Fatal(err)
+	}
+	writes := store.writes
+	for range 100 {
+		if err = e.Tick(); err != nil {
 			t.Fatal(err)
 		}
 	}
-	a, _ := f.e.Account(f.trader.ID)
-	if a.Player.Positions[f.owner.ID].Quantity != 100 {
-		t.Fatal("重复成交")
+	if store.writes != writes {
+		t.Fatal("idle ticker wrote database")
 	}
-	expected := InitialCash - 100*100000 - FeesFor(f.e.Settings().Active, "buy", 100*100000).Total()
-	if a.Player.Cash != expected {
-		t.Fatalf("现金 %d，预期 %d", a.Player.Cash, expected)
+	s := e.Settings()
+	s.PremiumPPM = 12345
+	if err = e.SetSettings(s); err != nil {
+		t.Fatal(err)
 	}
-	f.e.Close()
-	e, err := Open(f.path, func() time.Time { return f.now })
+	restarted, err := NewEngine(store, func() time.Time { return now })
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer e.Close()
-	if _, err = e.Submit(f.trader.ID, input); err != nil {
-		t.Fatal(err)
-	}
-	after, _ := e.Account(f.trader.ID)
-	if after.Player.Cash != expected {
-		t.Fatal("重启后重复扣款")
-	}
-}
-func TestLimitFreezeCancelAndPriceTrigger(t *testing.T) {
-	f := setup(t)
-	o, err := f.e.Submit(f.trader.ID, order(f, "buy", "limit", 10, 90000, "limit_00001"))
-	if err != nil || o.Status != "pending" {
-		t.Fatal(err, o)
-	}
-	a, _ := f.e.Account(f.trader.ID)
-	if a.Available >= a.Player.Cash {
-		t.Fatal("挂单未冻结")
-	}
-	if err = f.e.Cancel(f.trader.ID, o.ID); err != nil {
-		t.Fatal(err)
-	}
-	a, _ = f.e.Account(f.trader.ID)
-	if a.Available != InitialCash {
-		t.Fatal("撤单未释放")
-	}
-	_, err = f.e.Submit(f.trader.ID, order(f, "buy", "limit", 10, 90000, "limit_00002"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.now = f.now.Add(time.Minute)
-	if err = f.e.Upload(f.upload, 800, f.now.Unix()); err != nil {
-		t.Fatal(err)
-	}
-	a, _ = f.e.Account(f.trader.ID)
-	if a.Player.Positions[f.owner.ID].Quantity != 10 || a.Player.Orders[len(a.Player.Orders)-1].Price != 80000 {
-		t.Fatal("未按触发报价成交")
-	}
-}
-func TestShortCollateralBorrowAndLiquidation(t *testing.T) {
-	f := setup(t)
-	_, err := f.e.Submit(f.trader.ID, order(f, "short", "market", 20000, 0, "short_00001"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, _ := f.e.Account(f.trader.ID)
-	if a.ShortLiability != 2_000_000_000 || a.InitialMargin != 1_000_000_000 || a.Available > InitialCash-1_000_000_000 {
-		t.Fatal("卖空所得未冻结")
-	}
-	f.now = f.now.Add(time.Hour)
-	if err = f.e.Tick(); err != nil {
-		t.Fatal(err)
-	}
-	a, _ = f.e.Account(f.trader.ID)
-	expected := int64(2_000_000_000 * 80000 * 3600 / (365 * 86400 * 1_000_000))
-	if a.Player.Fees.Borrow != expected {
-		t.Fatalf("借券费错误 %d != %d", a.Player.Fees.Borrow, expected)
-	}
-	if err = f.e.Upload(f.upload, 5000, f.now.Unix()); err != nil {
-		t.Fatal(err)
-	}
-	a, _ = f.e.Account(f.trader.ID)
-	if len(a.Player.Positions) != 0 || a.Equity >= 0 {
-		t.Fatal("应强平且保留跳空债务")
-	}
-	if a.Player.Orders[len(a.Player.Orders)-1].Reason != "维持保证金不足，系统强制平仓" {
-		t.Fatal("强平原因丢失")
-	}
-}
-func TestSettlementAndSameDaySale(t *testing.T) {
-	f := setup(t)
-	s := f.e.Settings()
-	s.Active.LotSize = 100
-	s.Active.SellDelayDays = 1
-	s.Active.WeekdaysOnly = true
-	s.Active.CashDelayDays = 2
-	if err := f.e.SetSettings(s); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.e.Submit(f.trader.ID, order(f, "buy", "market", 100, 0, "delay_00001")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.e.Submit(f.trader.ID, order(f, "sell", "market", 100, 0, "delay_00002")); err == nil {
-		t.Fatal("T+1 当日卖出")
-	}
-	f.now = f.now.Add(24 * time.Hour)
-	if err := f.e.Upload(f.upload, 1000, f.now.Unix()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.e.Submit(f.trader.ID, order(f, "sell", "market", 100, 0, "delay_00003")); err != nil {
-		t.Fatal(err)
-	}
-	a, _ := f.e.Account(f.trader.ID)
-	if a.Unsettled == 0 || a.Available == a.Player.Cash {
-		t.Fatal("卖出资金应待交收")
-	}
-	f.now = f.now.Add(48 * time.Hour)
-	if err := f.e.Tick(); err != nil {
-		t.Fatal(err)
-	}
-	a, _ = f.e.Account(f.trader.ID)
-	if a.Unsettled != 0 {
-		t.Fatal("现金未交收")
-	}
-}
-func TestCycleLeapMonthCutoffAndReset(t *testing.T) {
-	f := setup(t)
-	s := DefaultSettings()
-	feb := seasonFor(time.Date(2028, 2, 10, 0, 0, 0, 0, time.UTC), s)
-	if time.Unix(feb.EndsAt-1, 0).In(time.FixedZone("CST", 8*3600)).Day() != 25 {
-		t.Fatal("闰月倒数第5日错误")
-	}
-	if _, err := f.e.Submit(f.trader.ID, order(f, "buy", "market", 10, 0, "season_0001")); err != nil {
-		t.Fatal(err)
-	}
-	f.now = time.Unix(f.e.state.Season.EndsAt, 0)
-	if err := f.e.Tick(); err != nil {
-		t.Fatal(err)
-	}
-	a, _ := f.e.Account(f.trader.ID)
-	if len(a.Player.Positions) != 0 || !f.e.state.Season.Settled {
-		t.Fatal("赛季未结算")
-	}
-	results, err := f.e.Seasons()
-	if err != nil || len(results) != 1 {
-		t.Fatal("排名未归档", err)
-	}
-	equity := results[0].Rankings[1].Equity
-	f.now = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	if err = f.e.Tick(); err != nil {
-		t.Fatal(err)
-	}
-	a, _ = f.e.Account(f.trader.ID)
-	if a.Player.Cash != InitialCash || a.Player.Fees.Total() != 0 {
-		t.Fatal("新赛季未重置")
-	}
-	after, _ := f.e.Seasons()
-	if after[0].Rankings[1].Equity != equity {
-		t.Fatal("归档排名改变")
-	}
-}
-func TestSelfTradeStaleQuoteAndTampering(t *testing.T) {
-	f := setup(t)
-	in := order(f, "buy", "market", 10, 0, "self_000001")
-	in.StockID = f.trader.ID
-	if _, err := f.e.Submit(f.trader.ID, in); err == nil {
-		t.Fatal("不得自我交易")
-	}
-	if err := f.e.Upload(f.upload, 999, f.now.Unix()-1); err == nil {
-		t.Fatal("旧报价未拒绝")
-	}
-	if err := f.e.Upload(f.upload, 999, f.now.Unix()); err == nil {
-		t.Fatal("同时间改价未拒绝")
-	}
-	f.now = f.now.Add(25 * time.Hour)
-	if _, err := f.e.Submit(f.trader.ID, order(f, "buy", "market", 10, 0, "stale_00001")); err == nil {
-		t.Fatal("过期报价仍成交")
-	}
-	newToken, err := f.e.RotateUpload(f.owner.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = f.e.Upload(f.upload, 1000, f.now.Unix()); err == nil {
-		t.Fatal("旧凭据仍有效")
-	}
-	if err = f.e.Upload(newToken, 1000, f.now.Unix()); err != nil {
-		t.Fatal(err)
-	}
-}
-func TestTradingDaysAndFees(t *testing.T) {
-	r := DefaultSettings().Presets[2]
-	f := FeesFor(r, "buy", 100001)
-	if f.Stamp != 200 {
-		t.Fatalf("港股印花税应整元向上取整，实得 %d", f.Stamp)
-	}
-	r.WeekdaysOnly = true
-	r.Holidays = []string{"2026-10-05"}
-	friday := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
-	next := time.Unix(availableAt(friday, 1, r), 0)
-	if next.In(time.FixedZone("CST", 28800)).Day() != 6 {
-		t.Fatal("未跳过周末及休市日")
-	}
-	us := DefaultSettings().Presets[3]
-	if !sessionOpen(time.Date(2026, 10, 6, 14, 0, 0, 0, time.UTC), us) {
-		t.Fatal("纽约夏令时间市场时段错误")
-	}
-	if !sessionOpen(time.Date(2026, 12, 8, 15, 0, 0, 0, time.UTC), us) {
-		t.Fatal("纽约冬令时间市场时段错误")
-	}
-}
-func TestCaptchaRequiredForRegisterAndLoginAndAdmin(t *testing.T) {
-	f := setup(t)
-	for _, mock := range []bool{false, true} {
-		c := Config{Mock: mock, Domain: "stock.nanoda.work", SessionSecret: strings.Repeat("s", 32), AdminPassword: "test-admin-password", Origins: []string{"http://127.0.0.1:*"}}
-		s := NewServer(f.e, c)
-		for _, path := range []string{"/api/register", "/api/login", "/api/console/login"} {
-			body := `{"username":"交易猫猫","password":"test-password-123","recaptchaToken":""}`
-			if path == "/api/register" {
-				body = `{"username":"新猫","password":"test-password-123","recaptchaToken":"","acceptedNotice":"2026-10-03"}`
-			}
-			if path == "/api/console/login" {
-				body = `{"password":"test-admin-password","recaptchaToken":""}`
-			}
-			w := httptest.NewRecorder()
-			s.ServeHTTP(w, httptest.NewRequest("POST", path, strings.NewReader(body)))
-			if w.Code != 400 || !strings.Contains(w.Body.String(), `"code":"CAPTCHA_REQUIRED"`) {
-				t.Fatalf("缺少验证码必须被验证码校验拒绝：mock=%v %s %d %s", mock, path, w.Code, w.Body.String())
-			}
-		}
-		r := httptest.NewRequest("GET", "/api/console/settings", nil)
-		r.Header.Set("Authorization", "Bearer "+s.sign(f.trader.ID, "player", time.Hour))
-		w := httptest.NewRecorder()
-		s.ServeHTTP(w, r)
-		if w.Code != 401 {
-			t.Fatal("玩家获得管理员权限")
-		}
-	}
-}
-func TestRecaptchaDoesNotMatchHostnameOrAction(t *testing.T) {
-	f := setup(t)
-	s := NewServer(f.e, Config{SecretKey: "secret"})
-	payload := map[string]any{"success": true, "hostname": "any-pilot.example", "action": "register"}
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			t.Error(err)
-		}
-		if r.Form.Get("secret") != "secret" || r.Form.Get("response") != "token" {
-			t.Error("未提交私密密钥与验证码 token")
-		}
-		_ = json.NewEncoder(w).Encode(payload)
-	}))
-	defer ts.Close()
-	s.SiteverifyURL = ts.URL
-	if err := s.verify(t.Context(), "token"); err != nil {
-		t.Fatal("停用域名验证后不得拒绝任意 hostname 或遗留 action", err)
-	}
-	delete(payload, "hostname")
-	delete(payload, "action")
-	if err := s.verify(t.Context(), "token"); err != nil {
-		t.Fatal("未发送 action，仍应接受验证成功的响应", err)
-	}
-	payload["success"] = false
-	requireCode(t, s.verify(t.Context(), "token"), "CAPTCHA_FAILED")
-}
-
-func TestConditionalMarketAndDiskFailure(t *testing.T) {
-	f := setup(t)
-	s := NewServer(f.e, Config{Origins: []string{}})
-	w := httptest.NewRecorder()
-	s.ServeHTTP(w, httptest.NewRequest("GET", "/api/market", nil))
-	etag := w.Header().Get("ETag")
-	req := httptest.NewRequest("GET", "/api/market", nil)
-	req.Header.Set("If-None-Match", etag)
-	w = httptest.NewRecorder()
-	s.ServeHTTP(w, req)
-	if w.Code != 304 || w.Body.Len() != 0 {
-		t.Fatal("共享行情缓存失效")
-	}
-	for _, validator := range []string{"W/" + etag, `"unrelated", W/` + etag} {
-		req := httptest.NewRequest("GET", "/api/market", nil)
-		req.Header.Set("If-None-Match", validator)
-		w := httptest.NewRecorder()
-		s.ServeHTTP(w, req)
-		if w.Code != 304 || w.Body.Len() != 0 {
-			t.Fatal("压缩代理后的行情应继续命中 304 缓存")
-		}
-	}
-	before, _ := f.e.Account(f.trader.ID)
-	f.e.db.Close()
-	_, err := f.e.Submit(f.trader.ID, order(f, "buy", "market", 10, 0, "disk_000001"))
-	if err == nil {
-		t.Fatal("磁盘失败仍成功")
-	}
-	after, _ := f.e.Account(f.trader.ID)
-	a, _ := json.Marshal(before)
-	b, _ := json.Marshal(after)
-	if !bytes.Equal(a, b) {
-		t.Fatal("落盘失败后内存账户改变")
-	}
-}
-
-func TestDormantOrdersDoNotWriteOnTick(t *testing.T) {
-	f := setup(t)
-	_, err := f.e.Submit(f.trader.ID, order(f, "buy", "limit", 10, 100, "dormant_001"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	revision := f.e.state.Revision
-	f.now = f.now.Add(time.Minute)
-	if err = f.e.Tick(); err != nil {
-		t.Fatal(err)
-	}
-	if f.e.state.Revision != revision {
-		t.Fatal("未触发挂单不应写入 SQLite")
-	}
-}
-func TestShortFeesSplitAtQuoteUpdate(t *testing.T) {
-	f := setup(t)
-	_, err := f.e.Submit(f.trader.ID, order(f, "short", "market", 100, 0, "split_00001"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.now = f.now.Add(time.Hour)
-	if err = f.e.Upload(f.upload, 2000, f.now.Unix()); err != nil {
-		t.Fatal(err)
-	}
-	a, _ := f.e.Account(f.trader.ID)
-	first := a.Player.Fees.Borrow
-	f.now = f.now.Add(time.Hour)
-	if err = f.e.Tick(); err != nil {
-		t.Fatal(err)
-	}
-	a, _ = f.e.Account(f.trader.ID)
-	total := int64(100 * 100000 * 3 * 80000 * 3600 / (365 * 86400 * 1_000_000))
-	if a.Player.Fees.Borrow != total || first <= 0 {
-		t.Fatal("未按变价前后两个区间计借券费", a.Player.Fees.Borrow, total)
-	}
-}
-
-func TestStopGapUsesExecutionPriceAndDayExpires(t *testing.T) {
-	f := setup(t)
-	_, err := f.e.Submit(f.trader.ID, order(f, "buy", "market", 100, 0, "stop_buy_01"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	in := order(f, "sell", "stop", 100, 90000, "stop_sell01")
-	o, err := f.e.Submit(f.trader.ID, in)
-	if err != nil || o.Status != "pending" {
-		t.Fatal(err)
-	}
-	f.now = f.now.Add(time.Minute)
-	if err = f.e.Upload(f.upload, 700, f.now.Unix()); err != nil {
-		t.Fatal(err)
-	}
-	a, _ := f.e.Account(f.trader.ID)
-	last := a.Player.Orders[len(a.Player.Orders)-1]
-	if last.Price != 70000 || last.Status != "filled" || len(a.Player.Positions) != 0 {
-		t.Fatal("止损跳空未按现价成交")
-	}
-	in = order(f, "buy", "limit", 10, 100, "day_order01")
-	in.TIF = "DAY"
-	o, err = f.e.Submit(f.trader.ID, in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.now = f.now.Add(24 * time.Hour)
-	if err = f.e.Tick(); err != nil {
-		t.Fatal(err)
-	}
-	a, _ = f.e.Account(f.trader.ID)
-	last = a.Player.Orders[len(a.Player.Orders)-1]
-	if last.Status != "expired" || a.Frozen != 0 {
-		t.Fatal("DAY 到期未释放资金")
-	}
-}
-func TestLateJoinDoesNotChangeClosedSeasonRanking(t *testing.T) {
-	f := setup(t)
-	f.now = time.Unix(f.e.state.Season.EndsAt, 0).Add(time.Hour)
-	if err := f.e.Tick(); err != nil {
-		t.Fatal(err)
-	}
-	_, _, err := f.e.Register("迟到猫猫", "test-password-123", 2000, f.now.Unix())
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.e.mu.RLock()
-	ranks := f.e.ranks(f.now.Unix())
-	f.e.mu.RUnlock()
-	if len(ranks) != 2 {
-		t.Fatal("截止后新开户进入已结束赛季排名")
-	}
-}
-func TestUnlimitedBorrowInventoryAndIntegerSafety(t *testing.T) {
-	f := setup(t)
-	s := f.e.Settings()
-	s.DelistThreshold = 0 // 此测试仅验证低价下的融券数量与整数安全边界。
-	if err := f.e.SetSettings(s); err != nil {
-		t.Fatal(err)
-	}
-	f.now = f.now.Add(time.Minute)
-	if err := f.e.Upload(f.upload, 1, f.now.Unix()); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ {
-		if _, err := f.e.Submit(f.trader.ID, order(f, "short", "market", 1_000_000, 0, fmt.Sprintf("unlimited_%d", i))); err != nil {
-			t.Fatal("融券不应限制为单笔数量上限", err)
-		}
-	}
-	a, _ := f.e.Account(f.trader.ID)
-	if a.Player.Positions[f.owner.ID].Quantity != -2_000_000 {
-		t.Fatal("未允许累计卖空超过单笔上限")
-	}
-	// 模拟通过历史涨跌积累到极大持仓的账户，检查最坏未来价格也不会溢出。
-	quantity := LedgerSafetyLimit / MaxQuotePrice
-	if err := f.e.transaction(func() error {
-		p := f.e.touch(f.trader.ID)
-		p.Cash = InitialCash
-		p.Positions[f.owner.ID] = &Position{StockID: f.owner.ID, Quantity: quantity, Cost: quantity * 100, Lots: []Lot{{quantity, f.now.Unix()}}}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	before, _ := f.e.Account(f.trader.ID)
-	if _, err := f.e.Submit(f.trader.ID, order(f, "buy", "market", 1, 0, "overflow_01")); err == nil || publicError(err).Code != "NUMERICAL_LIMIT" {
-		t.Fatal("超出安全数值边界仍能开仓", err)
-	}
-	after, _ := f.e.Account(f.trader.ID)
-	if after.Player.Cash != before.Player.Cash || after.Player.Positions[f.owner.ID].Quantity != quantity {
-		t.Fatal("被拒委托改变了账本")
-	}
-	if _, err := f.e.Submit(f.trader.ID, order(f, "sell", "market", 1_000_000, 0, "safe_close_01")); err != nil {
-		t.Fatal("安全边界不应阻止平仓", err)
-	}
-}
-func BenchmarkMarketCache1000Players(b *testing.B) {
-	now := time.Date(2026, 10, 6, 10, 0, 0, 0, time.UTC)
-	settings := DefaultSettings()
-	e, err := Open(filepath.Join(b.TempDir(), "benchmark.db"), func() time.Time { return now })
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.Cleanup(func() { e.Close() })
-	e.state = State{Settings: settings, Season: seasonFor(now, settings), Revision: 1}
-	for i := int64(1); i <= 1000; i++ {
-		e.players[i] = &Player{ID: i, Username: fmt.Sprintf("玩家%d", i), Cash: InitialCash, Quote: Quote{Price: 100000, Previous: 100000, ObservedAt: now.Unix()}, Positions: map[int64]*Position{}, Orders: []*Order{}}
-	}
-	if _, _, err := e.MarketJSON(); err != nil {
-		b.Fatal(err)
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, _, err := e.MarketJSON(); err != nil {
-			b.Fatal(err)
-		}
+	if err = restarted.InitializeDefaults("missing-file"); err != nil || restarted.Settings().PremiumPPM != 12345 {
+		t.Fatal("restart overwrote real config", err)
 	}
 }

@@ -1,446 +1,248 @@
 package exchange
 
 import (
+	"context"
+	"crypto/sha256"
 	"database/sql"
-	"encoding/json"
+	"encoding/hex"
 	"fmt"
-	_ "modernc.org/sqlite"
-	"os"
-	"path/filepath"
-	"reflect"
-	"sync"
+	_ "github.com/lib/pq"
+	"strconv"
 	"time"
 )
 
-type Engine struct {
-	mu               sync.RWMutex
-	db               *sql.DB
-	clock            Clock
-	state            State
-	players          map[int64]*Player
-	names            map[string]int64
-	uploads          map[string]int64
-	watchers         map[int64]map[int64]bool
-	marginOwners     map[int64]bool
-	activePlayers    map[int64]bool
-	delistCandidates map[int64]bool
-	instances        map[string]int64
-	instanceIDs      map[string]int64
-	identityCodes    map[string]int64
-	RequireBinding   bool
-	dirty            map[int64]bool
-	before           map[int64]*Player
-	histories        []historyWrite
-	trades           []Trade
-	stockVersions    map[int64]uint64
-	detailCache      map[string]detailCacheEntry
-	detailBytes      int
-	points           []struct {
-		ID    int64
-		Point QuotePoint
-	}
-	archives      []SeasonResult
-	cache         []byte
-	cacheRevision uint64
-	cacheTime     int64
-	cacheUntil    int64
-	cacheVersion  uint64
-	changes       chan struct{}
+// PostgresStore 按实体写入受影响行；完整历史独立存储，不随账本反复序列化。
+type PostgresStore struct {
+	db   *sql.DB
+	lock *sql.Conn
 }
 
-func Open(path string, clock Clock) (*Engine, error) {
-	if clock == nil {
-		clock = time.Now
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return nil, err
-	}
-	db, err := sql.Open("sqlite", path)
+func OpenPostgres(dsn string) (*PostgresStore, error) {
+	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	_, err = db.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA cache_size=-2048; PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS metadata (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS players (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, folded TEXT NOT NULL UNIQUE, data TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS player_identity_codes (player_id INTEGER PRIMARY KEY REFERENCES players(id), code TEXT NOT NULL UNIQUE);
-CREATE TABLE IF NOT EXISTS quotes (stock_id INTEGER NOT NULL, time INTEGER NOT NULL, price INTEGER NOT NULL, PRIMARY KEY(stock_id,time));
-CREATE TABLE IF NOT EXISTS quote_history (stock_id INTEGER NOT NULL, time INTEGER NOT NULL, price INTEGER NOT NULL, precise INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(stock_id,time));
-CREATE TABLE IF NOT EXISTS minute_prices (stock_id INTEGER NOT NULL, time INTEGER NOT NULL, open INTEGER NOT NULL, high INTEGER NOT NULL, low INTEGER NOT NULL, close INTEGER NOT NULL, first_time INTEGER NOT NULL, last_time INTEGER NOT NULL, samples INTEGER NOT NULL, PRIMARY KEY(stock_id,time));
-CREATE INDEX IF NOT EXISTS minute_prices_time_stock ON minute_prices(time,stock_id);
-CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY, stock_id INTEGER NOT NULL, username TEXT NOT NULL, side TEXT NOT NULL, kind TEXT NOT NULL, quantity INTEGER NOT NULL, price INTEGER NOT NULL, time INTEGER NOT NULL, forced INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS trades_stock_time ON trades(stock_id,time,id);
-CREATE TABLE IF NOT EXISTS history_sync (stock_id INTEGER NOT NULL, month TEXT NOT NULL, count INTEGER NOT NULL, digest TEXT NOT NULL, checked_at INTEGER NOT NULL, PRIMARY KEY(stock_id,month));
-CREATE TABLE IF NOT EXISTS receipts (player_id INTEGER NOT NULL, client_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(player_id,client_id));
-CREATE TABLE IF NOT EXISTS instance_bindings (binding_key TEXT PRIMARY KEY, source_key TEXT UNIQUE NOT NULL, player_id INTEGER UNIQUE NOT NULL);
-CREATE TABLE IF NOT EXISTS seasons (id TEXT PRIMARY KEY, data TEXT NOT NULL);`)
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err = db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("Postgres 连接失败")
+	}
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
-	e := &Engine{db: db, clock: clock, players: map[int64]*Player{}, names: map[string]int64{}, uploads: map[string]int64{}, watchers: map[int64]map[int64]bool{}, changes: make(chan struct{})}
-	var raw string
-	err = db.QueryRow("SELECT data FROM metadata WHERE id=1").Scan(&raw)
-	if err == sql.ErrNoRows {
-		e.state = State{Settings: DefaultSettings(), NextPlayer: 1, NextOrder: 1}
-		e.state.Season = seasonFor(clock(), e.state.Settings)
-	} else if err != nil {
+	var locked bool
+	if err = conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock(718890246235)").Scan(&locked); err != nil || !locked {
+		conn.Close()
 		db.Close()
-		return nil, err
-	} else if err = json.Unmarshal([]byte(raw), &e.state); err != nil {
-		db.Close()
-		return nil, err
+		return nil, fmt.Errorf("同一数据库只允许一个交易所进程运行")
 	}
-	if raw != "" {
-		migrateFinancingRules(raw, &e.state.Settings)
-		migrateDelistThreshold(raw, &e.state.Settings)
+	_, err = db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS mmex_v2_entities (kind TEXT NOT NULL,id TEXT NOT NULL,data JSONB NOT NULL,PRIMARY KEY(kind,id));
+ CREATE TABLE IF NOT EXISTS mmex_v2_history (stock_id BIGINT NOT NULL,time_ms BIGINT NOT NULL,action_points BIGINT NOT NULL CHECK(action_points>=0),PRIMARY KEY(stock_id,time_ms));
+ CREATE TABLE IF NOT EXISTS mmex_v2_months (stock_id BIGINT NOT NULL,month TEXT NOT NULL,count BIGINT NOT NULL DEFAULT 0,digest TEXT NOT NULL DEFAULT '',dirty BOOLEAN NOT NULL DEFAULT true,PRIMARY KEY(stock_id,month));
+ DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM mmex_v2_entities WHERE kind='schema' AND id='history-months-v2-shanghai') THEN
+ DELETE FROM mmex_v2_months;
+ INSERT INTO mmex_v2_months(stock_id,month) SELECT DISTINCT stock_id,to_char(to_timestamp(time_ms/1000) AT TIME ZONE 'Asia/Shanghai','YYYY-MM') FROM mmex_v2_history ON CONFLICT DO NOTHING;
+ INSERT INTO mmex_v2_entities(kind,id,data) VALUES('schema','history-months-v2-shanghai','{}') ON CONFLICT DO NOTHING;
+ END IF; END $$;`)
+	if err == nil {
+		_, err = db.ExecContext(ctx, `
+ CREATE OR REPLACE FUNCTION mmex_v2_history_dirty_new() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ INSERT INTO mmex_v2_months(stock_id,month) SELECT DISTINCT stock_id,to_char(to_timestamp(time_ms/1000) AT TIME ZONE 'Asia/Shanghai','YYYY-MM') FROM new_rows ON CONFLICT(stock_id,month) DO UPDATE SET dirty=true; RETURN NULL; END $$;
+ CREATE OR REPLACE FUNCTION mmex_v2_history_dirty_old() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ INSERT INTO mmex_v2_months(stock_id,month) SELECT DISTINCT stock_id,to_char(to_timestamp(time_ms/1000) AT TIME ZONE 'Asia/Shanghai','YYYY-MM') FROM old_rows ON CONFLICT(stock_id,month) DO UPDATE SET dirty=true; RETURN NULL; END $$;
+ CREATE OR REPLACE FUNCTION mmex_v2_history_dirty_update() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+ INSERT INTO mmex_v2_months(stock_id,month) SELECT DISTINCT stock_id,to_char(to_timestamp(time_ms/1000) AT TIME ZONE 'Asia/Shanghai','YYYY-MM') FROM (SELECT stock_id,time_ms FROM new_rows UNION SELECT stock_id,time_ms FROM old_rows) AS changed ON CONFLICT(stock_id,month) DO UPDATE SET dirty=true; RETURN NULL; END $$;
+ CREATE OR REPLACE FUNCTION mmex_v2_history_dirty_truncate() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN UPDATE mmex_v2_months SET dirty=true; RETURN NULL; END $$;
+ DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname='mmex_v2_history_insert') THEN
+ CREATE TRIGGER mmex_v2_history_insert AFTER INSERT ON mmex_v2_history REFERENCING NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION mmex_v2_history_dirty_new();
+ CREATE TRIGGER mmex_v2_history_delete AFTER DELETE ON mmex_v2_history REFERENCING OLD TABLE AS old_rows FOR EACH STATEMENT EXECUTE FUNCTION mmex_v2_history_dirty_old();
+ CREATE TRIGGER mmex_v2_history_update AFTER UPDATE ON mmex_v2_history REFERENCING OLD TABLE AS old_rows NEW TABLE AS new_rows FOR EACH STATEMENT EXECUTE FUNCTION mmex_v2_history_dirty_update();
+ CREATE TRIGGER mmex_v2_history_truncate AFTER TRUNCATE ON mmex_v2_history FOR EACH STATEMENT EXECUTE FUNCTION mmex_v2_history_dirty_truncate();
+ END IF; END $$;`)
 	}
-	if err = ValidateSettings(e.state.Settings); err != nil {
-		db.Close()
-		return nil, err
-	}
-	rows, err := db.Query("SELECT data FROM players")
 	if err != nil {
+		conn.Close()
 		db.Close()
 		return nil, err
 	}
+	return &PostgresStore{db, conn}, nil
+}
+func (s *PostgresStore) Close() error {
+	if s.lock != nil {
+		s.lock.ExecContext(context.Background(), "SELECT pg_advisory_unlock(718890246235)")
+		s.lock.Close()
+	}
+	return s.db.Close()
+}
+func (s *PostgresStore) Load() ([]Entity, error) {
+	rows, err := s.db.Query("SELECT kind,id,data FROM mmex_v2_entities")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Entity
 	for rows.Next() {
-		var v string
-		var p storedPlayer
-		if err = rows.Scan(&v); err != nil {
-			break
+		var x Entity
+		if err = rows.Scan(&x.Kind, &x.ID, &x.Data); err != nil {
+			return nil, err
 		}
-		if err = json.Unmarshal([]byte(v), &p); err != nil {
-			break
-		}
-		p.Player.Folded = p.Folded
-		p.Player.PasswordHash = p.PasswordHash
-		p.Player.UploadHash = p.UploadHash
-		p.Player.SessionVersion = p.SessionVersion
-		if p.Player.InitialCash == 0 {
-			p.Player.InitialCash = InitialCash
-		}
-		e.players[p.Player.ID] = p.Player
-		e.names[p.Folded] = p.Player.ID
-		e.uploads[p.UploadHash] = p.Player.ID
+		out = append(out, x)
 	}
-	rowErr := rows.Err()
-	rows.Close()
-	if err != nil || rowErr != nil {
-		db.Close()
-		return nil, fmt.Errorf("读取玩家: %v %v", err, rowErr)
-	}
-	e.reindex()
-	e.stockVersions = map[int64]uint64{}
-	e.detailCache = map[string]detailCacheEntry{}
-	if err = e.migrateIdentityCodes(); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err = e.migrateMarketData(); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err = e.Tick(); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return e, nil
+	return out, rows.Err()
 }
-func (e *Engine) Close() error { return e.db.Close() }
-func clonePlayer(p *Player) *Player {
-	b, _ := json.Marshal(p)
-	var c Player
-	_ = json.Unmarshal(b, &c)
-	c.Folded = p.Folded
-	c.PasswordHash = p.PasswordHash
-	c.UploadHash = p.UploadHash
-	c.SessionVersion = p.SessionVersion
-	return &c
-}
-func (e *Engine) touch(id int64) *Player {
-	if !e.dirty[id] {
-		e.before[id] = e.players[id]
-		e.players[id] = clonePlayer(e.players[id])
-		e.dirty[id] = true
-	}
-	return e.players[id]
-}
-func (e *Engine) reindex() {
-	e.instances = map[string]int64{}
-	e.instanceIDs = map[string]int64{}
-	e.identityCodes = map[string]int64{}
-	e.watchers = map[int64]map[int64]bool{}
-	e.marginOwners = map[int64]bool{}
-	e.activePlayers = map[int64]bool{}
-	e.delistCandidates = map[int64]bool{}
-	for id, p := range e.players {
-		if p.IdentityCode != "" {
-			e.identityCodes[p.IdentityCode] = id
-		}
-		if needsTick(p) {
-			e.activePlayers[id] = true
-		}
-		if e.belowDelistThreshold(p) {
-			e.delistCandidates[id] = true
-		}
-		if p.Binding != nil {
-			e.instances[p.Binding.Key] = id
-			e.instanceIDs[p.Binding.InstanceID] = id
-		}
-		if hasMargin(p) {
-			e.marginOwners[id] = true
-		}
-		for stock := range p.Positions {
-			if e.watchers[stock] == nil {
-				e.watchers[stock] = map[int64]bool{}
-			}
-			e.watchers[stock][id] = true
-		}
-		for _, o := range p.Orders {
-			if o.Status == "pending" {
-				if e.watchers[o.StockID] == nil {
-					e.watchers[o.StockID] = map[int64]bool{}
-				}
-				e.watchers[o.StockID][id] = true
-			}
-		}
-	}
-}
-
-// 单写事务中只复制和落盘受影响的账户；提交失败时恢复内存，避免双重成交。
-func (e *Engine) transaction(fn func() error) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	before := map[int64]*Player{}
-	e.before = before
-	stateBefore := e.state
-	e.dirty = map[int64]bool{}
-	e.points = nil
-	e.archives = nil
-	e.histories = nil
-	e.trades = nil
-	defer func() {
-		e.before = nil
-		e.dirty = nil
-		e.points = nil
-		e.archives = nil
-		e.histories = nil
-		e.trades = nil
-	}()
-	rollback := func() {
-		for id := range e.dirty {
-			if p := before[id]; p != nil {
-				e.players[id] = p
-			} else {
-				delete(e.players, id)
-			}
-		}
-		e.state = stateBefore
-	}
-	if err := fn(); err != nil {
-		rollback()
-		return err
-	}
-	if len(e.dirty) == 0 && len(e.histories) == 0 && reflect.DeepEqual(e.state, stateBefore) {
-		return nil
-	}
-	e.state.Revision++
-	tx, err := e.db.Begin()
+func (s *PostgresStore) Commit(entities []Entity, history []HistoryWrite) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tx, err := s.lock.BeginTx(ctx, nil)
 	if err != nil {
-		rollback()
 		return err
 	}
 	defer tx.Rollback()
-	changedStocks := map[int64]bool{}
-	for id := range e.dirty {
-		p := e.players[id]
-		if before[id] == nil || before[id].Quote != p.Quote || before[id].Disabled != p.Disabled || before[id].Delisted != p.Delisted || before[id].Username != p.Username {
-			changedStocks[id] = true
-		}
-		if before[id] != nil && before[id].Username != p.Username {
-			for _, o := range p.Orders {
-				if o.Status == "pending" {
-					changedStocks[o.StockID] = true
-				}
-			}
-		}
-		b, marshalErr := json.Marshal(storedPlayer{Player: p, Folded: p.Folded, PasswordHash: p.PasswordHash, UploadHash: p.UploadHash, SessionVersion: p.SessionVersion})
-		if marshalErr != nil {
-			err = marshalErr
-			break
-		}
-		_, err = tx.Exec("INSERT INTO players(id,username,folded,data) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username,folded=excluded.folded,data=excluded.data", id, p.Username, p.Folded, string(b))
-		if err != nil {
-			break
-		}
-		_, err = tx.Exec("INSERT INTO player_identity_codes(player_id,code) VALUES(?,?) ON CONFLICT(player_id) DO UPDATE SET code=excluded.code", id, p.IdentityCode)
-		if err != nil {
-			break
-		}
-		if p.Binding != nil {
-			_, err = tx.Exec("INSERT INTO instance_bindings(binding_key,source_key,player_id) VALUES(?,?,?) ON CONFLICT(binding_key) DO NOTHING", p.Binding.Key, p.Binding.InstanceID, id)
-			if err != nil {
-				break
-			}
-		}
-		oldOrders := map[int64]*Order{}
-		if before[id] != nil {
-			for _, o := range before[id].Orders {
-				oldOrders[o.ID] = o
-			}
-		}
-		for _, o := range p.Orders {
-			old := oldOrders[o.ID]
-			if old != nil && old.Status == o.Status && old.Reason == o.Reason {
-				continue
-			}
-			if o.Status == "pending" || old != nil && old.Status == "pending" {
-				changedStocks[o.StockID] = true
-			}
-			raw, _ := json.Marshal(o)
-			_, err = tx.Exec("INSERT INTO receipts(player_id,client_id,data) VALUES(?,?,?) ON CONFLICT(player_id,client_id) DO UPDATE SET data=excluded.data", id, o.ClientID, string(raw))
-			if err != nil {
-				break
-			}
+	for _, v := range entities {
+		if v.Delete {
+			_, err = tx.ExecContext(ctx, "DELETE FROM mmex_v2_entities WHERE kind=$1 AND id=$2", v.Kind, v.ID)
+		} else {
+			_, err = tx.ExecContext(ctx, "INSERT INTO mmex_v2_entities(kind,id,data) VALUES($1,$2,$3::jsonb) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data", v.Kind, v.ID, string(v.Data))
 		}
 		if err != nil {
-			break
+			return err
 		}
 	}
-	if err == nil {
-		b, _ := json.Marshal(e.state)
-		_, err = tx.Exec("INSERT INTO metadata(id,data) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", string(b))
-	}
-	for _, v := range e.points {
+	// 一条 UNNEST 覆盖本批次；不逐点往返数据库，不设上传条数配额。
+	for _, h := range history {
+		if len(h.Points) == 0 {
+			continue
+		}
+		times := make([]int64, len(h.Points))
+		values := make([]int64, len(h.Points))
+		for i, p := range h.Points {
+			times[i], values[i] = p.T, p.P
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO mmex_v2_history(stock_id,time_ms,action_points) SELECT $1,t,p FROM unnest($2::bigint[],$3::bigint[]) AS x(t,p) ON CONFLICT(stock_id,time_ms) DO UPDATE SET action_points=excluded.action_points WHERE mmex_v2_history.action_points<>excluded.action_points`, h.StockID, pgArray(times), pgArray(values))
 		if err != nil {
-			break
+			return err
 		}
-		_, err = tx.Exec("INSERT INTO quotes(stock_id,time,price) VALUES(?,?,?) ON CONFLICT(stock_id,time) DO UPDATE SET price=excluded.price", v.ID, v.Point.Time, v.Point.Price)
 	}
-	if err == nil {
-		err = e.writeMarketData(tx, changedStocks)
-	}
-	for _, v := range e.archives {
-		if err != nil {
-			break
+	return tx.Commit()
+}
+func pgArray(values []int64) string {
+	b := make([]byte, 0, len(values)*12)
+	b = append(b, '{')
+	for i, v := range values {
+		if i > 0 {
+			b = append(b, ',')
 		}
-		b, _ := json.Marshal(v)
-		_, err = tx.Exec("INSERT INTO seasons(id,data) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", v.Season.ID, string(b))
+		b = strconv.AppendInt(b, v, 10)
 	}
-	if err == nil {
-		err = tx.Commit()
-	}
+	b = append(b, '}')
+	return string(b)
+}
+func (s *PostgresStore) Chart(id, from, to, interval int64) ([]Candle, error) {
+	rows, err := s.TimedChart(id, from, to, interval)
 	if err != nil {
-		rollback()
-		return err
+		return nil, err
 	}
-	for stock := range changedStocks {
-		e.stockVersions[stock]++
+	out := []Candle{}
+	for _, row := range rows {
+		out = append(out, row.Candle)
 	}
-	// 更新受影响账户的订阅索引，报价变化只触达持仓或挂单玩家。
-	for id := range e.dirty {
-		old := before[id]
-		if old != nil {
-			if old.Folded != e.players[id].Folded {
-				delete(e.names, old.Folded)
-			}
-			for stock := range old.Positions {
-				delete(e.watchers[stock], id)
-			}
-			for _, o := range old.Orders {
-				delete(e.watchers[o.StockID], id)
-			}
-		}
-		p := e.players[id]
-		if p.Binding != nil {
-			e.instances[p.Binding.Key] = id
-			e.instanceIDs[p.Binding.InstanceID] = id
-		}
-		delete(e.marginOwners, id)
-		delete(e.activePlayers, id)
-		delete(e.delistCandidates, id)
-		if needsTick(p) {
-			e.activePlayers[id] = true
-		}
-		if e.belowDelistThreshold(p) {
-			e.delistCandidates[id] = true
-		}
-		if hasMargin(p) {
-			e.marginOwners[id] = true
-		}
-		for stock := range p.Positions {
-			if e.watchers[stock] == nil {
-				e.watchers[stock] = map[int64]bool{}
-			}
-			e.watchers[stock][id] = true
-		}
-		for _, o := range p.Orders {
-			if o.Status == "pending" {
-				if e.watchers[o.StockID] == nil {
-					e.watchers[o.StockID] = map[int64]bool{}
-				}
-				e.watchers[o.StockID][id] = true
-			}
-		}
-		e.names[p.Folded] = id
-		e.identityCodes[p.IdentityCode] = id
-		e.uploads[p.UploadHash] = id
-	}
-	e.cache = nil
-	if e.changes != nil {
-		close(e.changes)
-	}
-	e.changes = make(chan struct{})
-	return nil
+	return out, nil
 }
-
-func needsTick(p *Player) bool {
-	if hasMargin(p) || len(p.Settlements) > 0 {
-		return true
-	}
-	for _, o := range p.Orders {
-		if o.Status == "pending" {
-			return true
-		}
-	}
-	return false
-}
-
-func (e *Engine) History(id int64) ([]QuotePoint, error) {
-	rows, err := e.db.Query("SELECT time/1000,price FROM quote_history WHERE stock_id=? ORDER BY time", id)
+func (s *PostgresStore) TimedChart(id, from, to, interval int64) ([]TimedCandle, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	rows, err := s.db.QueryContext(ctx, `WITH buckets AS (SELECT ((time_ms+CASE WHEN $4::bigint>=86400000 THEN 28800000 ELSE 0 END)/$4::bigint)*$4::bigint-CASE WHEN $4::bigint>=86400000 THEN 28800000 ELSE 0 END AS bucket,min(time_ms) AS first_time,max(time_ms) AS last_time,max(action_points) AS high,min(action_points) AS low,count(*) AS samples FROM mmex_v2_history WHERE stock_id=$1 AND time_ms>=$2 AND time_ms<=$3 GROUP BY ((time_ms+CASE WHEN $4::bigint>=86400000 THEN 28800000 ELSE 0 END)/$4::bigint)*$4::bigint-CASE WHEN $4::bigint>=86400000 THEN 28800000 ELSE 0 END) SELECT b.bucket,o.action_points*100,b.high*100,b.low*100,c.action_points*100,b.samples,b.first_time,b.last_time FROM buckets b JOIN mmex_v2_history o ON o.stock_id=$1 AND o.time_ms=b.first_time JOIN mmex_v2_history c ON c.stock_id=$1 AND c.time_ms=b.last_time ORDER BY b.bucket`, id, from, to, interval)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []QuotePoint{}
+	out := []TimedCandle{}
 	for rows.Next() {
-		var p QuotePoint
-		if err := rows.Scan(&p.Time, &p.Price); err != nil {
+		var c TimedCandle
+		if err = rows.Scan(&c.T, &c.O, &c.H, &c.L, &c.C, &c.N, &c.FirstAt, &c.LastAt); err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		out = append(out, c)
 	}
 	return out, rows.Err()
 }
-func (e *Engine) Seasons() ([]SeasonResult, error) {
-	rows, err := e.db.Query("SELECT data FROM seasons ORDER BY id DESC")
+func (s *PostgresStore) Manifest(id int64) ([]Month, error) {
+	shanghai, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []SeasonResult{}
-	for rows.Next() {
-		var raw string
-		var v SeasonResult
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(raw), &v); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, "SELECT month,count,digest,dirty FROM mmex_v2_months WHERE stock_id=$1 ORDER BY month FOR UPDATE", id)
+	if err != nil {
+		return nil, err
+	}
+	type summary struct {
+		month Month
+		dirty bool
+	}
+	summaries := []summary{}
+	for rows.Next() {
+		var x summary
+		if err = rows.Scan(&x.month.Month, &x.month.Count, &x.month.Digest, &x.dirty); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		summaries = append(summaries, x)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	out := make([]Month, 0, len(summaries))
+	for _, x := range summaries {
+		if x.dirty {
+			start, err := time.ParseInLocation("2006-01", x.month.Month, shanghai)
+			if err != nil {
+				return nil, err
+			}
+			end := start.AddDate(0, 1, 0)
+			points, err := tx.QueryContext(ctx, "SELECT time_ms,action_points FROM mmex_v2_history WHERE stock_id=$1 AND time_ms>=$2 AND time_ms<$3 ORDER BY time_ms", id, start.UnixMilli(), end.UnixMilli())
+			if err != nil {
+				return nil, err
+			}
+			hasher := sha256.New()
+			x.month.Count = 0
+			for points.Next() {
+				var t, p int64
+				if err = points.Scan(&t, &p); err != nil {
+					points.Close()
+					return nil, err
+				}
+				fmt.Fprintf(hasher, "%d:%d\n", t, p)
+				x.month.Count++
+			}
+			if err = points.Err(); err != nil {
+				points.Close()
+				return nil, err
+			}
+			points.Close()
+			x.month.Digest = hex.EncodeToString(hasher.Sum(nil))
+			if _, err = tx.ExecContext(ctx, "UPDATE mmex_v2_months SET count=$3,digest=$4,dirty=false WHERE stock_id=$1 AND month=$2", id, x.month.Month, x.month.Count, x.month.Digest); err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, x.month)
+	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

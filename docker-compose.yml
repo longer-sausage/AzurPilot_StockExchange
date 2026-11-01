@@ -1,0 +1,32 @@
+name: mingmiao-exchange
+services:
+  exchange:
+    image: mingmiao-exchange:local
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LISTEN_ADDR: 0.0.0.0:8888
+      FRONTEND_DIR: /app/frontend/dist
+      DEFAULTS_FILE: /app/config/defaults.json
+    ports:
+      - "127.0.0.1:8888:8888"
+    volumes:
+      - ./frontend/dist:/app/frontend/dist:ro
+    networks:
+      - postgres
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8888/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+networks:
+  postgres:
+    external: true
+    name: ${POSTGRES_NETWORK:?请设置现有 PostgreSQL 容器所在网络}

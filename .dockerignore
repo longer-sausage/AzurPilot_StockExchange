@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+data
+bin
+releases
+frontend
+scripts
+docs
+**/__pycache__

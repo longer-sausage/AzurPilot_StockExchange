@@ -1,313 +1,114 @@
-# 茗喵证券交易所 · MMEX
+# 茗喵证券交易所
 
-以 AzurPilot 玩家总行动力为股价的模拟证券游戏。交易主界面位于相邻 `../AzurPilot/frontend/src/stock/`，本仓库 `frontend/` 只提供 React + TypeScript `/console` 管理控制台，Go 单进程提供 `/api` 和静态页面，SQLite 持久化账户、委托凭据、历史报价及月赛排名。默认 API / 页面域名为 `stock.nanoda.work`，通过环境变量修改。
+独立的模拟证券游戏，站点为 **https://stock.azurpilot.com**。主页面公开浏览行情；交易与管理员登录均支持“记住我”。本项目不涉及真实资金、充值或提现。
 
-## 本机体验
+## 账户与三个组件
 
-```powershell
-npm ci --prefix frontend
-npm run dev:mock --prefix frontend
-```
+- **交易所**：本仓库 Go 后端、React 交易站和 `/console` 管理控制台。交易账本使用外部 PostgreSQL，单进程运行。
+- **AzurPilot**：相邻仓库仅提供实例股票注册、绑定状态与行动力增量上报，不再嵌入交易终端、不代理玩家登录或交易。
+- **AstrBot**：`astrbot_plugin_mingmiao_stock` 插件仅支持官方 QQ 机器人。只修改插件目录，不需要修改 AstrBot 核心、全局配置或操作其 Docker。
 
-需要 Go >= 1.24，或者已有 `bin/exchange.exe`（Linux 为 `bin/exchange`）。开发启动器优先使用这个二进制；否则运行 `go run ./cmd/exchange`，也可以通过 `GO_BIN` 指定 Go 的绝对路径。管理员控制台为 http://127.0.0.1:5178/console。交易主界面需从 AzurPilot 实例进入；交易所 origin 首页只显示入口说明。
+交易账户与股票账户完全独立：
 
-在另一个终端进入相邻 AzurPilot 仓库，运行：
+1. 加入 QQ 群 [1126124220](https://qm.qq.com/q/93NWF3S362)，向官方机器人发送 `注册 <用户名>`。机器人直接创建交易账户并在当前群内返回随机初始密码；官方唯一身份为 `appid:openid`，不收集真实 QQ 号。
+2. 使用该用户名和初始密码登录独立交易站，首次登录强制修改为自己的强密码。网页仅提供登录、改密和交易，已完全删除网页注册及注册密钥流程。
+3. 在 AzurPilot 当前实例的“茗喵证券交易所”填写股票名称，注册独立股票。复制绑定命令，在群内向机器人发送 `绑定股票 <绑定码>`。
+4. 交易账户必须完成改密和一对一股票绑定才能查看账户、维护自选或交易。未绑定账户仅可完成登录、改密、绑定、重置与退出；网页显示必需的绑定引导。
+5. 机器人注册、重置密码、持仓、绑定、查询和交易全部支持群聊，密码等回复也在原群内公开显示。确认码仍仅允许发起人在原会话使用，不允许他人代为确认。
 
-```powershell
-$env:STOCK_EXCHANGE_URL='http://127.0.0.1:8080'
-npm run dev:mock --prefix frontend
-```
+密码重置需要二次确认，会撤销旧会话，生成随机强密码，并要求下次登录改密。管理员删除股票会按最后报价结清该股票的持仓、撤销相关挂单、解除发行交易账户的绑定；AzurPilot 收到删除响应后持久停止该身份上报，账户必须绑定其他股票才能继续使用。历史和成交记录保留。
 
-打开 AzurPilot 的 http://127.0.0.1:5173，进入实例运行总览，点击资源卡片调节键左侧的交易所入口。
+交易站已恢复月赛进度及当前/历史排行榜、证券筛选与排序、账户持久自选、独立证券详情、分时/日 K/分钟 K、技术指标、成交量及逐笔成交、公开待成交委托、持仓和损益、账户费用及交收明细、六步教程与 37 项名词词典、亮暗主题。管理端提供账户搜索分页、完整详情、改名、并发保护的余额增量调整、二次确认停用及密码重置、股票停牌/删除、预设另存/更新/删除。
 
-- 玩家：`海风指挥官` / `mock-player-password`；也可直接注册新用户名。
-- 管理员：`mock-admin-password`。
-- 注册、登录和管理员登录都使用 Google reCAPTCHA v2 官方测试验证码，公开测试 site key 为 `6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI`；点击复选框后取得 token，Go 使用官方测试 secret 经 `www.recaptcha.net` 请求 Siteverify，须联网。Mock 不直接放行，生产拒绝官方测试 secret。
-- Mock 使用真实 Go 交易引擎和独立 `data/mock.db`；只替换验证码、种子行情和演示赛期。模拟数据库不进入版本控制。
+本次改动范围、旧数据限制、兼容性及配套发布顺序见 [注册、绑定与功能恢复交付说明](docs/FEATURE_RESTORATION.md)。旧版差异审计保留为改动前基线，不作为当前缺失列表。
 
-普通开发模式先启动 Go，再运行 `npm run dev --prefix frontend`。Vite 将 `/api` 代理到本机 8080；生产管理控制台与 API 同源；玩家终端经 AzurPilot 的认证 WebSocket 转发，不在浏览器中保存交易会话、上传令牌或实例私钥。
+## 游戏规则
 
-## 游戏与交易
+`config/defaults.json` 是新数据库的默认规则，只在首次启动空的 v2 数据库时载入。重启不会覆盖管理员已保存配置，不改写其他已有规则预设或旧 SQLite 数据库。
 
-- 全部证券默认隐藏本月退市股票，支持上市状态、报价状态、涨跌方向、价格与涨跌幅区间、归属及更新时间组合过滤，并可按代码、名称、价格、涨跌、更新时间双向排序。自选股通过星标添加或移除，保存到账户，重启、换设备和次月重置后保留；退市自选仍可切换筛选查看。
-- 我的持仓汇总全部多头和空头的总浮动盈亏，并分别显示多头、空头浮盈亏；采用当前价格相对账面成本的盈亏，成本含开仓交易费用；融资与借券利息单列。
-- 注册、交易确认和身份弹窗统一挂载于页面顶层，内容独立滚动，关闭与提交按钮固定在弹窗头尾；焦点限制在弹窗内，关闭恢复原焦点，提示消息不拦截点击。
+`config/presets/` 独立保留茗喵、A 股、港股、美股参考预设。现实参考预设的原有佣金、印花税、征费、整手、交易时段、T+N 交收、保证金及融资/借券利率不变；仅更新过时的无限额度描述。管理员可选择并编辑当前生效副本，不会改写这些参考文件。有限发行量、普通和融券小时额度是所有模式的公共账本约束；新增阶梯税与流动性溢价只在茗喵默认模式启用。
 
-- 证券详情提供分时、日 K、M5/M10/M20/M30/M60、真实成交量和公开逐笔成交；原生终端使用现有 ECharts，支持 MA、EXPMA、BOLL、ENE、BBI、MACD、多空趋势、全屏及缩放平移。K 线按实际采集记录聚合；每月原始历史不截断为 2000 条。行情变更通过 SSE → AzurPilot WebSocket 即时通知，按 ETag 获取最新数据；指标计算留在浏览器。
-- 新开户自动补传实例已保存的当月完整总行动力，包括注册前记录；旧实例及已开户账户首次升级只读导入当月旧 CL1 统计库的 `ap_total` 快照，与中央认证历史合并，上月及更早月份不参与旧统计导入。当月旧统计读取失败会提示并重试，保留原库，注册、登录和新行动力同步继续可用。同毫秒冲突优先中央记录，迁移状态与队列一起认证，复制或重建实例不继承旧统计。中央资源入库仅追加总行动力历史保存，游戏采集脚本不改动；持久补传日志按月轮转、每月待传记录完整签名并立即发送，断网与重启持续补传，失败最大 60 秒退避。每五分钟重读源数据并进行 count / SHA-256 校对，同毫秒修正会重算受影响 K 线。完整性仅涵盖实际采集、已保存的记录，升级前覆盖掉且未在旧统计库保留或离线未采集的数据无法还原；服务器不验证游戏真实性。
-
-- 每位注册玩家自动上市一支股票，证券代码 `MM000001` 等，初始现金默认 **20,000,000 模拟币**，可在控制台调整（1 至 1 万亿，最多两位小数）。新开户采用发布时的金额，已有账户当前余额及本赛季本金保留；收益率按个人实际起始本金计算。用户名进行 Unicode 全角归一及大小写折叠后唯一，不回收已停用用户名。
-- **1 点总行动力 = 1 模拟币/股**。行情直接同步实例现有资源记录，服务器不上传/识别截图，不验证行动力真实性。无最近记录时初始报价为 0，后续收到新记录后更新；0 价股票暂停成交，并遵守行动力退市规则。旧实时 `/quotes` 接口只接受最近 24 小时内、按时间递增的整数记录，相同时间不同数值会拒绝，新记录立即受理。新增历史接口允许当前及此前 12 个月的毫秒原始记录、同一时间修正和批量补传，也能及时更新新鲜的最新报价；客户端连续补传待传月份，无固定批次间隔。报价超时后暂停新成交，仍按最后有效报价估值、计借券费和执行风控。
-- **低行动力退市**：总行动力低于控制台配置阈值（默认 **500 点**，0 关闭）时强制退市，等于阈值仍可上市。仅从每月 **5 日 00:00（上海时间）**起、且本月已开赛未结算时判断；定时任务、新开户、新报价及规则发布都会检查。退市前按旧报价计提利息和借券费，然后按触发报价强平这支股票的多空持仓、归还融资并收取正常交易费，不受休市或 T+N 限制；相关挂单撤销并释放冻结。股票本月保持退市，即使行动力恢复或阈值降低也不恢复；次月清除状态，开赛后重新判断。账户仍可登录、同步、进入排行榜并交易其他股票。迟到的旧低价补传不重放退市。
-- **涨跌幅基于今日开盘价**：上海时间当天第一条已保存的行动力报价为开盘价，市场列表、涨跌排序、行情滚动条及证券详情统一使用 `(最新价 − 开盘价) / 开盘价`。历史补传和修正会更新开盘价；跨日重新取值，当天没有报价或开盘价为 0 时显示 `—`。切换图表历史日期不会更改最新报价的涨跌幅基准。
-- 买入、卖出、卖空、回补四个方向；市价、限价、止损触发市价；DAY / GTC；撤单释放冻结资金与股份。止损跳空时以触发后的实际报价成交，不保证触发价。不能交易自己的股票，反向持仓需先平仓。
-- 所有成交由交易所提供无限**模拟流动性**，全量成交，不设置可借证券库存或融券定位要求。数量按整手、资金、保证金与整数账本安全范围核验，不设置固定单笔数量、名义金额或挂单条数配额。异常大额开仓还需符合 64 位账本安全范围，按最高可能报价核验，达到边界仍可平仓。没有真实五档盘口、部分成交、价格冲击或真实资产。
-- 买入与卖空均可选择杠杆倍数；上限为 `max(1, floor(1 / IMR))`，最多 10 倍，默认 50% IMR 支持最高 **2 倍**。1 倍买入使用全额现金，2 倍买入只支付一半本金和全额交易费，其余记为融资借款。空头冻结所选杠杆对应的自有保证金及全部卖空所得现值，所得不能再次开仓。
-- 融资利息按 `未偿本金 × 融资年利率 × 持有秒数 / (365 × 86400)` 累计，默认 8%，可在管理配置修改。卖出按股份比例偿还借款，仅净款进入现金交收；现金与融资买入可在同一证券中混合，保证金按股数精确加权，不重复冻结首付款。挂单只冻结自有资金，实际成交时才放贷；规则变更后不符合当前杠杆上限的开仓挂单会拒绝。
-- 净值为现金 + 多头市值 − 融资本金 − 空仓负债 − 待落账融资利息与借券费。维持保证金为 `(仍有融资借款的多头现值 + 空仓现值) × MMR`；不足时撤销全部挂单、卖出多头偿还融资并回补空头，跳空债务保留至本季结束。融资多头跌价后的追加初始保证金差额会冻结可用现金。
-- 借券费按 `空仓现值 × 年费率 × 持有秒数 / (365 × 86400)` 累计；变价前先结算旧价区间，小数分结转。金额以整数分保存；没有浮点余额或收费。
-- T+N 可卖股份与 T+N 可用现金分别配置，跳过配置的周末与休市日期。关闭页面不会清除委托，停止服务后重启恢复持仓、挂单与累计费用。
-- 每月 **5 日 00:00（上海时间）开赛，倒数第 5 日 23:59:59 结束**。例如 2026 年 10 月为 10 月 5 日至 10 月 27 日；闰年 2 月截止 25 日。后台每秒检查到期结算，业务请求也检查赛期。按最后报价强制平仓并收取正常交易费，保存最终排名；次月 1 日按届时配置重置所有玩家本金（默认 2,000 万），5 日开放交易。长期离线后重启也会补结算。
-- 控制台可编辑/新建/删除市场预设、暂停交易、调整初始资金、退市行动力阈值、佣金、最低佣金、印花税、取整、征费、借券费、融资年利率、IMR、MMR、整手、交易时段、时区、休市日和赛期；新赛期日期从下月生效。已受理委托保留原手续费及交收快照，执行时仍接受当前保证金风控。
-- 交易所收入按佣金、模拟印花税、征费、借券费、融资利息拆分，展示本季与累计值。现实的税费通常代收转付；本游戏统一列入模拟交易所统计，不能兑换、充值或提现。
-- 新手学院提供六步教程、28 个词条和当前规则，明确说明融资杠杆、做空、保证金、交收和强平风险。玩家终端只保留市场、持仓、委托、排行榜与教程；没有手动行动力同步页面或控制台链接，后台自动上传仍持续运行。管理员直接访问 `/console`。
-- 控制台的「用户管理」支持用户名、证券代码、身份码及实例 ID 查询、正常 / 停用筛选和分页；用户详情展示注册时间、永久绑定、行情、资金、交收、持仓及委托。可修改用户名、重设密码、增减现金与停用 / 恢复账户；现金扣减检查冻结、交收和保证金，保存失败整体回滚，重设密码或停用会撤销旧会话。
-- 每位用户拥有独立、唯一且永久的随机身份识别码，旧账户升级时自动补发。仅本人和管理员能查看：本人点击 AzurPilot 交易终端右上角用户名，管理员打开用户详情。公开行情、排行榜与成交记录不含此码；改名、赛季重置和重启后保留，用于核实账户身份。
-
-预设以 A 股、港股、美股规则作教学参考；佣金和借券费为可调游戏示例。港股手数统一简化，美股低价股最低保证金、币种/汇率、特定证券税收豁免及真实假期自动同步没有逐项复制。管理员应自行维护假期。
-
-## 与 AzurPilot 连接
-
-交易主界面和教程位于 `../AzurPilot/frontend/src/stock/`，由 `src/pages/StockExchange.tsx` 挂载为原生 React 页面。入口在运行总览资源卡片调节按钮**左边**，无需 iframe 或消息桥。本仓库 Go 提供 `/api`，React 提供 `/console`。
-
-AzurPilot 后端环境：
-
-```sh
-STOCK_EXCHANGE_URL=https://stock.nanoda.work
-# 本机开发用 http://127.0.0.1:8080，直接连接 Go API
-```
-
-注册或首次登录旧账户时，账户与当前实例的持久 UUID / Ed25519 身份**永久一对一绑定**。另一个实例不能登录该账户，同一实例不能注册第二个账户；退出登录只清除交易会话，不解除绑定，也不停止后台同步。复制实例配置不会复制身份。更换模拟器连接设置不改变实例身份。
-
-实例身份文件和仅上传凭据分别保存在 AzurPilot 的 `cache/stock-exchange/identities/<UUID>.json` 和 `bindings.json`，复用游戏账号保险库的 AES-256-GCM 与本机密钥保护，不再明文保存私钥或上传令牌。Windows 使用用户 DPAPI，Linux 使用项目外 `0700/0600` 密钥目录；实例登记、文件摘要和历史检查点也保存在该目录。备份必须同时保留实例配置、中央 SQLite、`cache/stock-exchange/` 和项目外密钥/登记，并保持原项目路径、主机与用户保护环境。密钥或身份丢失不能靠新建同名实例恢复，不会自动降级或重建。交易会话只保存在 AzurPilot 后端内存，24 小时过期，后端重启后重新登录并完成验证码；上传凭据仍恢复后台同步。
-
-AzurPilot 的总行动力历史追加保存 HMAC-SHA-256 哈希链，正常修正保留原事件；读取时验证整条链、当前值索引及项目外检查点。补传样本、游标和回执也全部认证。修改、删行、截断、单独回滚历史或替换凭据会停止同步，修改仪表盘 JSON 不会产生可上传的新采集记录。旧版首次迁移保留原身份与现存数据并建立基线，无法证明迁移前未被改动；本地认证也不证明游戏数据真实。
-
-玩家绑定稳定 UUID，实例名称只用于显示及查找。API 或外部删除配置都会撤销本地会话、监视与凭据；同名重建、复制或导入配置不会继承原玩家。外部重命名保留 UUID 时沿用原绑定并迁移中央资源数据库，数据库冲突则停止并保留原件。删除后单独恢复旧配置不能复活原 UUID，交易所服务器上的玩家与永久绑定仍保留。
-
-后台每 250 毫秒检查配置文件与运行观察 SQLite 的修改状态；发现新记录后立即上传，完整月份连续补传，无 15 秒上传间隔或批次数量上限。未变化时不重读配置、不签名、不访问交易所；网络失败才指数退避，最多 60 秒并持续重试。没有新增游戏截图、OCR 或游戏操作；实例签名只确认身份和请求完整性，不证明游戏数据真实。
-
-玩家及管理前端使用 Google reCAPTCHA v2，公开 site key `6Ldu7N4tAAAAABEvkf8KUza3x6rxHGLm1dP5gpMq` 固定在各自的 `recaptcha.ts` 中，后端不读取、不下发 site key。脚本、验证 iframe 与后端 Siteverify 均使用 `https://www.recaptcha.net/recaptcha/`，官方依赖脚本根据访问环境来自 `https://www.gstatic.com/recaptcha/` 或 `https://www.gstatic.cn/recaptcha/`；Go 返回的 CSP 在 `script-src` 中同时允许这两个资源路径，不使用 `www.google.com` 或 `recaptcha.google.com` 入口。私密 secret 仅写入 Go 后端环境变量 `RECAPTCHA_SECRET_KEY`。此站点已在 Google 控制台停用域名验证，Go 不匹配 hostname；v2 不发送或匹配 action，因此不会再产生“验证码来源或用途不匹配”。注册和登录切换时清空 token，每次提交后重置组件，过期及旧组件延迟回调不能恢复旧 token；无效或重复使用的 token 仍由 Siteverify 拒绝。
-
-升级时需同时更新 Go 服务、管理前端与 AzurPilot 玩家前端，认证请求字段已改为 `recaptchaToken`。在服务器 `.env` 设置与上述 site key 配套的 Google `RECAPTCHA_SECRET_KEY`，移除旧验证码变量；原 Cloudflare secret 无法用于 Google。
-
-`ALLOWED_ORIGINS` 控制浏览器直连 Go API 的来源；原生页面通过 AzurPilot 服务端代理，HTTP 请求无需浏览器跨域或嵌入权限。
-
-## Debian 一键部署
-
-推荐先在开发机 / CI 构建，服务器无需 Node、Go 或 C 编译器：
-
-Windows 安装 Go >= 1.24、Node.js >= 18 和 PowerShell 7 后，在仓库根目录执行（使用系统自带的 `tar`，无需 Git Bash / WSL）：
-
-```powershell
-pwsh -NoProfile -File .\scripts\release.ps1
-```
-
-脚本先构建前端并运行本机 Go 测试，再交叉编译 Linux amd64 / arm64，生成 `releases/mingmiao-exchange.tar.gz`。运行结束后恢复原有 Go 环境变量；任一步失败会停止发布。Linux / Git Bash 可使用下面的 Bash 脚本构建，两个脚本生成相同结构的部署包：
-
-```sh
-bash scripts/release.sh
-# 将 deploy.sh、.env.example 和 releases/mingmiao-exchange.tar.gz 上传到服务器同一目录
-cp .env.example .env
-chmod 600 .env
-# 编辑 .env，填写真实密钥、密码、外部 TLS 证书/无密码私钥绝对路径及允许来源；先将域名 DNS 指向此服务器
-sudo bash deploy.sh mingmiao-exchange.tar.gz
-```
-
-`deploy.sh` 支持源代码目录直接运行：`sudo bash deploy.sh`，没有构建产物时安装构建工具并按系统可用资源编译。极低内存服务器使用预构建包可避免构建开销。脚本仅支持 Debian amd64 / arm64，需要 root、systemd、可访问软件源，80 / 443 端口可用；已有服务器服务配置不会被删除。
-
-填写以下环境变量（**不要将私密值发到聊天或提交 Git**）：
-
-| 变量 | 用途 |
+| 项目 | 默认值 |
 | --- | --- |
-| `EXCHANGE_DOMAIN` | 默认 `stock.nanoda.work` |
-| `RECAPTCHA_SECRET_KEY` | Google reCAPTCHA v2 的服务器 secret，前端永不收到 |
-| `ADMIN_PASSWORD` | 至少 12 字符 |
-| `SESSION_SECRET` | 至少 32 字符的随机密钥，更换会使所有会话失效 |
-| `ALLOWED_ORIGINS` | 浏览器直连 Go API 的 CORS 来源 |
-| `TLS_CERT_FILE` / `TLS_KEY_FILE` | 必填，外部证书链及无密码私钥的可读绝对路径 |
+| 初始模拟币 | 20,000,000 |
+| 单股票总发行 | 10,000 股 |
+| 单股票普通小时交易额度 | 1,000 股，买卖共用 |
+| 单股票融券总量 | 10,000 股，与普通库存独立 |
+| 单股票融券小时交易额度 | 1,000 股，卖空与回补共用 |
+| 最大流动性溢价 | 5%，随小时利用率增加 |
+| 总资产税率 | `[0, 3千万]` 0%；`(3千万, 8千万]` 8%；`(8千万, 1亿]` 16%；大于 1亿 32% |
 
-脚本强制使用外部证书，不安装 certbot、不签发证书、不设置续期任务。未配置证书、文件不可读、已过期、域名不符或公私钥不匹配会拒绝部署。证书校验在停服及替换文件之前完成；HTTP 自动跳转 HTTPS。证书由外部流程维护，更新后执行 `nginx -t && systemctl reload nginx`。使用 Cloudflare 代理时设置 **Full (strict)**。脚本从 Cloudflare 官方拉取受信代理网段，nginx 只信任这些来源的 `CF-Connecting-IP`，Go 只信任本机反代的真实 IP 头。
+税率按每次成交前总资产所属档位，对该次整个成交额征税，按整数分向上取整。另有佣金和借券费用，当前配置以站点左侧“交易规则”为准。管理员可以调整默认规则及每支现有股票的发行量、交易额度、借券量和借券额度。
 
-程序安装至 `/opt/mingmiao-exchange`，数据库独立保留于 `data/exchange.db`，每次升级停服后连同 WAL 备份。systemd 设置开机启动、自动重启和权限隔离；不再设置固定 CPU、Go 内存、进程内存或任务数上限，旧环境文件里的 `GOMAXPROCS=1` / `GOMEMLIMIT=64MiB` 也不再被部署脚本写入服务环境。Go 使用系统默认调度，认证按启动时可用 CPU 配置并发。数据库使用 WAL / NORMAL、单连接、2 MiB 页缓存；关闭系统时先完成在途请求。nginx 复用上游连接及 TLS 会话，恢复真实访问 IP 并保留连接超时保护；同步、交易和历史补传不设置请求频率或条数配额，事件流关闭代理缓冲。部署在停服前按现有 nginx master 的文件描述符硬上限（首次安装使用部署进程硬上限，均受内核 `fs.nr_open` 约束）设置 `worker_rlimit_nofile`，保留已有更高配置和 `worker_connections`；重载后核验活跃 worker 的实际上限，避免只提高连接槽却仍受 1024 软上限限制。
+额度内立即成交；超额、库存不足或不满足限价的余量挂单。每个自然小时整点恢复额度，挂单按限价从高到低、同价先到先得处理。买入/回补不超过限价，卖出/卖空不低于限价。未成交部分可撤销，冻结资金和股票不能重复使用。
 
-```sh
-systemctl status mingmiao-exchange
-journalctl -u mingmiao-exchange
-sudo systemctl restart mingmiao-exchange
-# 更新：上传新包后重新运行 deploy.sh；环境变量更改后重新部署或重启服务
-```
+只有绑定交易账户的股票可以被卖空，不得交易自己绑定的股票。做空需要现金保证金，所得冻结；回补亏损按实际收取金额直接补偿股票绑定账户，盈利或未平仓不向发行者收费。保证金不足会风控平仓，发行者不承担交易者债务。
 
-环境文件按字面值解析，不执行 shell 代码。程序日志不输出密码、上传凭据、验证码 token 或数据库账户内容。生产脚本拒绝 `MOCK_MODE=true`；程序的 mock 监听也只能是回环地址。
+保留融资买入、借款利息、保证金强平、T+N 股票/现金交收、月赛结算与低行动力退市。月赛按上海时间，默认每月 5 日开赛、倒数第 5 日结束时截止；新月重置赛季资金和持仓，保留账户、绑定和行情历史。退市默认每月 5 日起且开赛后，实时行动力低于 500 时本月退市，历史补传不会重放退市。当前开放状态与实际赛季窗口以市场接口和页面展示为准。
 
-## TLS 525 排查与单独修复 nginx
+## API 与带宽
 
-Cloudflare 的 [525 定义](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/cloudflare-5xx-errors/error-525/) 是边缘节点与源站的 TLS 握手失败。Go 的 `/healthz` 为 200 或 `nginx -t` 通过，都不能单独证明公网 TLS 可用。先核对同一故障时段的 nginx 错误日志、源站双栈握手和公网响应；日志不要整份复制到聊天，以免包含请求中的凭据。
+完整契约见 [docs/API-v2.md](docs/API-v2.md)。API 前缀 `/api/v2`，金额与价格为整数分、费率 ppm、行情时间毫秒。没有 Google reCAPTCHA 或旧 v1 API。
 
-2026-10-07 的实际故障为：`worker_connections=5120`，但 worker 的文件描述符软上限仍为 1024，实际已使用 1021 个描述符；nginx 反复记录 `accept4() failed (24: Too many open files)`，公网实际返回 525。上游连接也占用描述符，因此有效容量不能只按浏览器连接数计算。[nginx 官方说明](https://nginx.org/en/docs/ngx_core_module.html#worker_connections) 明确指出连接槽包含代理上游，实际连接数也受文件描述符上限约束。
+公开行情仅返回股票摘要，支持 ETag/304；SSE 仅通知版本，浏览器合并变化后重取。图表按所选范围返回指定周期的 OHLC 聚合，不传全量行动力。原始历史独表保存，不随账本重写。AzurPilot 仅发送未确认增量，历史缺口/同毫秒修正通过摘要核验补传；空档不造点，历史补传不重放交易。实例 Ed25519 签名用于确认来源，不证明游戏数据真实，私钥不进入浏览器。
 
-只修复已安装服务器上的这类限制错配时，把新版 `deploy.sh` 上传到服务器暂存目录，在该目录执行：
+11 月行动力实机采样、自动上传与月初单根 K 线的修复及发布验收见 [行动力采样与图表修复记录](docs/ACTION-POINT-2026-11-01.md)。
 
-```sh
-sudo nginx -t
-sudo systemctl show nginx -p MainPID -p LimitNOFILE -p LimitNOFILESoft
-sudo bash ./deploy.sh --nginx-only
-```
+## 构建与验证
 
-该模式无需 `.env`、应用凭据或发布包，先检查现有配置并确认 master 身份，再验证候选配置、备份到 `/var/backups/mingmiao-nginx/`，原子替换主配置，对现有 master 发送 HUP，并等待新代 worker 的实际文件描述符上限生效。描述符耗尽也可能使旧代的控制通道出错；确认新代启动后，向同一 master 下仍接收请求的旧 worker 补发 `SIGQUIT`，按 [nginx 优雅退出语义](https://nginx.org/en/docs/control.html) 排空旧连接。用 Linux pidfd、父进程和 worker 身份核验避免 PID 重用误伤；需要 Python 3.9+ / Linux 5.3+，能力不足会在修改配置前报错。重复执行不重复改写配置或创建备份；保留原有 nginx 启动管理方式和同机站点。若重载或进程核验失败，恢复本次修改前的主配置并尝试重新加载，命令返回失败；不要将失败视作验收通过。
-
-它不修改连接槽数量、CPU / 内存配额、证书、Go 服务、前端或数据库。**交易所后端、管理前端、AzurPilot 玩家前端和 AzurPilot 后端均不需要重新构建、部署或重启；必要操作仅为更新 nginx 配置并平滑重载。** 运行代码与接口未变，相对于修改前的仓库版本，各前后端组合及已有会话的兼容关系不受影响，无数据迁移或发布顺序要求。普通完整部署也执行相同前置配置和运行进程核验，但仍会按原流程安装两端并重启 Go；修复本问题不必重跑整包部署。
-
-若硬上限不足以覆盖连接槽和额外日志等描述符，脚本提前报错；若较低 `worker_rlimit_nofile` 位于外部 include，也会提前报错，需核实输出并在原配置文件调整。`worker_connections` 仍是 nginx 必需的全进程容量参数；本修复保留该值，不自动扩大内存预分配。负载超过连接槽容量时应依据实际连接与上游数量评估容量，不能声称任何负载下都不会出现握手失败。
-
-修复后在服务器验证实际 TLS 和路由。公共可信证书不使用 `-k`；Origin CA 证书应使用 `--cacert <对应的CA文件>`：
-
-```sh
-for address in 127.0.0.1 '[::1]'; do
-  for path in /healthz /api/meta /console; do
-    curl --noproxy '*' -fsS --max-time 10 \
-      --resolve "stock.nanoda.work:443:$address" "https://stock.nanoda.work$path" -o /dev/null
-  done
-done
-curl --noproxy '*' -4 -fsS --max-time 15 https://stock.nanoda.work/healthz
-curl --noproxy '*' -6 -fsS --max-time 15 https://stock.nanoda.work/healthz
-```
-
-另外核对 `/console` HTML 引用的静态资源、TLS 1.2 / 1.3 握手及重载后新增日志，确认不再新增 `Too many open files` 或 `worker_connections are not enough`。保持 Cloudflare **Full (strict)**，外部证书的有效期、域名、密钥配对和维护责任仍适用；此修复不替代证书维护、源站路由或 Cloudflare 配置检查。
-
-## 前端部署与 `/console` 404 排查
-
-本仓库的 `frontend/` 是管理控制台，访问地址为 `https://stock.nanoda.work/console`（使用不带末尾 `/` 的地址）。玩家交易页面位于相邻 AzurPilot 仓库，修改玩家页面后须另行构建、部署 AzurPilot 的前端。
-
-生产部署链路为：浏览器 → nginx → `127.0.0.1:8080` Go 服务 → `FRONTEND_DIR` 下的静态文件。Go 二进制**不内嵌前端**，只上传后端程序不够；必须同时部署 `index.html`、`assets/` 及其他构建文件。`/console` 由 Go 返回 `index.html`，React 再显示管理控制台，无需创建 `console/` 目录。前端以域名根路径构建，资源路径为 `/assets/...`，API 路径为 `/api/...`，不要把整个 `dist` 放进 `dist/console/`，也不要将 Vite 的 `base` 改成 `/console/`。
-
-### 推荐：部署完整发布包
-
-在 Windows 开发机的仓库根目录执行：
+Go 版本以 `go.mod`、Node 依赖以 `frontend/package.json` 为准。
 
 ```powershell
-pwsh -NoProfile -File .\scripts\release.ps1
-```
-
-将生成的 `releases/mingmiao-exchange.tar.gz` 和仓库里的 `deploy.sh` 上传到服务器同一目录，首次部署还需 `.env.example` 并按前文填写 `.env`。在服务器上传目录执行：
-
-```sh
-# Windows 上传的旧脚本如存在 CRLF，先转换为 LF
-sed -i 's/\r$//' deploy.sh
-sudo bash deploy.sh mingmiao-exchange.tar.gz
-```
-
-脚本会校验发布包，将前端安装到 `/opt/mingmiao-exchange/frontend/dist`，在 `/opt/mingmiao-exchange/exchange.env` 中设置 `FRONTEND_DIR`，并配置 nginx 反向代理，HTTP / HTTPS 同时监听 IPv4 和 IPv6。如果使用了自定义 `INSTALL_DIR`，下面所有 `/opt/mingmiao-exchange` 路径须相应替换。
-
-更新时上传新的发布包，再执行同一部署命令。脚本会停服备份数据库及 WAL、覆盖后端和前端、重启交易所，再重载 nginx；数据库和账户保留。完成前会比对运行中的后端与发布包二进制，并核对 IPv4 / IPv6 源站 `/console` 返回页面的 SHA-256 和 `/api/meta`。只有检查通过才显示“部署完成”。如果在 nginx 阶段失败，后端 / 前端可能已经更新，旧 nginx 配置仍可能继续提供页面，应修复报错并重新执行部署。
-
-### 只更新管理控制台
-
-在开发机仓库根目录执行（PowerShell / Linux 均可）：
-
-```sh
-npm ci --prefix frontend --no-audit --no-fund
-npm run build --prefix frontend
-```
-
-把**整个** `frontend/dist` 目录上传到服务器仓库的 `frontend/dist`，确认文件已上传完整后，在服务器仓库根目录执行：
-
-```sh
-test -f frontend/dist/index.html
-sudo install -d -m 755 /opt/mingmiao-exchange/frontend/dist
-sudo cp -R frontend/dist/. /opt/mingmiao-exchange/frontend/dist/
-sudo chmod -R a+rX /opt/mingmiao-exchange/frontend/dist
-```
-
-默认安装中仓库目录与 `/opt/mingmiao-exchange` 是两个目录，只在仓库中运行 `npm run build` 不会自动更新线上文件。Go 在请求时读取静态文件，同一路径下更新前端通常无需重启；如果修改了已安装服务的 `FRONTEND_DIR`，须执行 `sudo systemctl restart mingmiao-exchange`。生产环境不需要启动 Vite 开发服务器。
-
-### 逐层定位 404
-
-在 Debian 服务器执行，先确认前端文件和服务账号权限，再直接请求 Go，绕过 nginx 和 CDN：
-
-```sh
-ls -l /opt/mingmiao-exchange/frontend/dist/index.html
-ls -l /opt/mingmiao-exchange/frontend/dist/assets/
-sudo -u mmex test -r /opt/mingmiao-exchange/frontend/dist/index.html
-sudo grep '^FRONTEND_DIR=' /opt/mingmiao-exchange/exchange.env
-sudo systemctl status mingmiao-exchange --no-pager
-curl -i http://127.0.0.1:8080/healthz
-curl -i http://127.0.0.1:8080/api/meta
-curl -I http://127.0.0.1:8080/console
-```
-
-预期 `/healthz`、`/api/meta` 和 `/console` 都返回 200，前两者为 JSON，最后一个为 HTML。健康检查不检查前端文件，只有 `/healthz` 成功不能证明控制台已正确部署。
-
-| 检查结果 | 排查方向 |
-| --- | --- |
-| 本机 8080 连接失败 | 检查 systemd 状态及 `journalctl -u mingmiao-exchange -n 100 --no-pager` |
-| 本机 `/api/meta` 为 200，但 `/console` 为 404 | 检查 `FRONTEND_DIR`、`index.html` 是否部署及 `mmex` 是否有目录访问 / 文件读取权限 |
-| 本机接口和页面均为 200，但公网为 nginx 的 HTML 404 | 优先检查域名对应的 nginx `server` / `location`，以及 CDN 的源站地址、端口和 Host 配置 |
-| 页面为 200，但 JS / CSS 为 404 | 检查是否上传完整 `assets/`、是否错误添加 `/console/` 前缀，以及资源请求是否也代理到 Go |
-
-默认部署应将页面、静态资源和 API 都代理给 Go。检查**实际接收该域名 HTTPS 请求**的 nginx `server`（通常为 `/etc/nginx/sites-available/mingmiao-exchange`），确保包含以下通用路由；保留部署脚本生成的 TLS、真实 IP 和 `/api/events` 关闭代理缓冲的配置：
-
-```nginx
-# 放在 server_name stock.nanoda.work 对应的 HTTPS server 内
-location / {
-    proxy_pass http://127.0.0.1:8080;
-    proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-```
-
-检查是否存在重复的 `server_name stock.nanoda.work`，或其他更优先的 `location /console`、`location /assets/`、`location /api/` 将请求转到错误目录 / 服务。修改后校验配置并重新加载：
-
-```sh
-sudo nginx -T
-sudo nginx -t && sudo systemctl reload nginx
-# 在源站本机测试 HTTPS 虚拟主机，绕过 DNS / CDN；非公共信任证书需用 --cacert 指定相应 CA
-curl --resolve stock.nanoda.work:443:127.0.0.1 -I https://stock.nanoda.work/console
-curl --resolve stock.nanoda.work:443:127.0.0.1 -i https://stock.nanoda.work/api/meta
-# 再检查公网链路
-curl -I https://stock.nanoda.work/console
-curl -i https://stock.nanoda.work/api/meta
-```
-
-如果源站 nginx 已返回 200、公网仍返回 404，检查当前 CDN / DNS 是否指向这台服务器，以及回源 Host 是否为 `stock.nanoda.work`；修复后再清除可能缓存的旧 404。控制台加载后若登录验证码失败，检查 `www.recaptcha.net` 及官方静态资源的网络访问、Google site key 与服务器 `RECAPTCHA_SECRET_KEY` 是否配套，并重新完成人机验证；无需配置验证码域名白名单。
-
-如果控制台已返回 200，但验证码区域空白或提示加载超时，检查浏览器是否报告 CSP 拦截 `www.gstatic.cn/recaptcha/`。`www.recaptcha.net/recaptcha/api.js` 会动态加载该官方依赖；只允许 `www.gstatic.com/recaptcha/` 会导致依赖无法执行。管理页面 CSP 由 Go 后端设置，此项修复只需重新构建并部署交易所后端、重启 `mingmiao-exchange` 服务，然后刷新页面；无需重新部署管理前端或 AzurPilot。若使用完整发布包，现有打包和部署脚本仍会同时处理 Go 与管理前端，但最小必要更新范围仅为 Go 后端。若 nginx 或 CDN 额外设置了 CSP，也需检查其策略；多条 CSP 会同时生效，增加一条宽松策略不能解除另一条策略的拦截。
-
-如果部署时 nginx 启动失败并报告 `Address already in use`，但 `ss -ltnp` 显示端口由已有 nginx 占用，可能存在未被 `nginx.service` 管理的 master，或 `/run/nginx.pid` 为空 / 过期。新版脚本会在 systemd 重载失败或服务未激活时扫描 `/proc`，核对 nginx 可执行文件、网络命名空间和 `/etc/nginx/nginx.conf`，对唯一匹配的 master 发送 HUP；不会写入 PID 文件或让 systemd 接管现有进程。只有没有 nginx master 时才尝试 systemd 启动，识别不明确时直接报错。原有启动 / 保活机制仍需维护；若要迁移到 systemd，先用 `ps` 和 `/proc/<master-pid>/cgroup` 确认现有启动来源，再安排迁移，避免影响同机其他站点。
-
-如果 `nginx -t` 报 `limit_req_zone ... is already bound`，检查同名限流区是否被重复定义，以及站点是否被 `/etc/nginx/conf.d` 和 GMSSH 等面板的 `include` 同时加载。同一套站点配置只保留一个加载入口；限流区定义只保留一份，对应站点可以继续引用它。应先确认重复来源再调整，避免误删其他站点的配置。新版脚本在停服 / 替换交易所文件前检查现有 nginx 配置，已有配置无效时会提前退出。旧版部署失败后若交易所已被停止，可先执行 `sudo systemctl daemon-reload && sudo systemctl start mingmiao-exchange` 恢复后端，再修复 nginx 配置并重新部署。
-
-还需分别验证 IPv4 / IPv6：上面的 `127.0.0.1` 只测试 IPv4。如果交易所只配置了 `listen 443 ssl;`，而其他站点配置了 `listen [::]:443 ssl;`，CDN 通过 IPv6 回源时可能命中其他站点，出现 IPv4 控制台为 200、公网为 404 的情况。可在服务器运行：
-
-```sh
-curl -kI --resolve 'stock.nanoda.work:443:[::1]' https://stock.nanoda.work/console
-```
-
-此处 `-k` 仅用于本机源站诊断。如果 IPv6 测试返回其他站点的 404，在交易所 HTTPS `server` 中保留 `listen 443 ssl;` 并添加 `listen [::]:443 ssl;`，HTTP `server` 中保留 `listen 80;` 并添加 `listen [::]:80;`，再运行 `sudo nginx -t && sudo systemctl reload nginx`。若服务器不使用 IPv6，则改为让 CDN 使用正确的 IPv4 源站。两种协议均返回 200 后，仍需确认 CDN 回源 Host / HTTPS SNI 与域名一致。
-
-## 性能和数据边界
-
-单进程内存账本 + SQLite 原子事务，提交失败恢复内存。事务只复制、备份和落盘受影响账户；证券索引持仓与挂单订阅者。成功提交后立即唤醒 `/api/events`，每秒时钟事件更新报价时效、赛期和计费估值；AzurPilot 后端共享一个 SSE 连接，通过 `stock` WebSocket 主题通知页面，市场、账户、委托、排行榜与图表随变更读取。请求正在执行时合并通知，并在完成后继续读取，避免丢失最后一次变更；断线自动重连并重新获取完整状态。行情和排行榜继续共享按版本及秒更新的编码缓存与 ETag。风控、计息及交收每秒检查，仅遍历需要处理的账户；月赛结算统一处理全部玩家。
-
-Go 与 nginx 不设置按客户端计数的请求次数、连接数或请求正文固定配额；nginx 的 `worker_connections` 和系统文件描述符上限仍约束全进程容量，详见上述 TLS 525 排查。AzurPilot WebSocket 的交易请求也不计入通用请求频率限制。验证码网络并发按 `max(4, 2×GOMAXPROCS)`、bcrypt 按 `GOMAXPROCS` 进行实际资源准入，繁忙返回 503。保留密码哈希、真实 Siteverify 成功校验、实例签名、来源白名单、幂等回执和整数账本安全核验。委托、逐笔成交、挂单、报价和赛季列表均完整返回；曾从账户快照裁掉的旧委托由私有 `/api/orders` 从持久回执恢复。
-
-按诚实玩家假设使用实例自报行动力，不进行真实性验证。签名用于永久实例绑定和请求完整性；基本范围、格式、顺序检查只防止传输/账本错误。游戏禁止自我交易、同记录改价和倒序数据。未接入游戏账号身份证明、真实交易所行情、真实资金或交易所节假日服务。
-
-## 验证
-
-```sh
 go test ./...
-go test -race ./...
 go vet ./...
-go test -run '^$' -bench BenchmarkMarketCache -benchmem ./internal/exchange
-bash -n deploy.sh scripts/release.sh
+go test -race ./...
+npm ci --prefix frontend
 npm run build --prefix frontend
-npx --prefix frontend playwright install chromium
+```
+
+真实 PostgreSQL 测试使用专用隔离数据库，绝不能填生产库。浏览器测试要求本机回环 PostgreSQL，测试会创建模拟账户与股票：
+
+```powershell
+$env:EXCHANGE_E2E_DATABASE_URL='postgres://postgres:isolated-test-only@127.0.0.1:15439/mmex_test?sslmode=disable'
 npm run test:e2e --prefix frontend
 ```
 
-引擎测试覆盖用户名归一/唯一性、初始资金、并发幂等、重启恢复、冻结/撤单、变价触发、借券费区间、T+N、周末/假期/DST、债务强平、月末/闰月、归档与重置、过期数据、上传凭据轮换、真实 Siteverify 的 hostname/action/失败结果、管理员权限、304、磁盘失败回滚、私有身份码迁移、休眠挂单不写盘、退市时间边界、多空结算与撤单、退市跨月及重启恢复、失败回滚、开盘价补传修正和跨日重置。本仓库浏览器测试覆盖管理控制台预设发布及用户查询、资料编辑、资金校验、密码重设和停用恢复；AzurPilot 的独立交易所浏览器测试覆盖原生入口、验证码开户与登录、买入、撤单、教程、私有身份码、手机布局和跨实例拒绝。
+E2E 从当前 Go 源码启动独立后端，默认 `127.0.0.1:18889` 与前端 `127.0.0.1:5178`。不使用旧 `bin/` 程序、不连接生产服务，也没有生产 Mock 模式。
 
-AzurPilot 的独立同步测试为 `uv run python -m unittest tests.test_stock_exchange`，入口浏览器测试为 `npm run test:e2e:stock --prefix frontend`（在 AzurPilot 仓库执行）。Windows 原有 API 套件的一项符号链接测试需要系统创建符号链接权限；其余项目可正常验证。
+## Docker Compose 部署
 
-## 参考资料
+仅提供 **一个纯 Go 后端服务**，不启动/管理 PostgreSQL、nginx、证书或前端构建容器。后端同时读取挂载的 `frontend/dist/` 静态文件。旧一键部署和 release 脚本已移除。
 
-- [Google reCAPTCHA 服务端验证](https://developers.google.com/recaptcha/docs/verify)及[全球访问入口](https://developers.google.com/recaptcha/docs/faq)：一次性 token、服务端校验及 `www.recaptcha.net` 替代入口。
-- [Cloudflare 真实访问 IP](https://developers.cloudflare.com/support/troubleshooting/restoring-visitor-ips/restoring-original-visitor-ips/)：只信任受信代理的 IP 头。
-- [上交所交易规则（2026 年修订）](https://www.sse.com.cn/lawandrules/sselawsrules2025/stocks/exchange/c/c_20260424_10816482.shtml)：股份回转交易和交易时段参考。
-- [港交所交易税费](https://www.hkex.com.hk/Services/Rules-and-Forms-and-Fees/Fees/Securities-(Hong-Kong)/Trading/Transaction?sc_lang=en)：印花税及交易征费参考。
-- [FINRA 保证金参考](https://www.finra.org/rules-guidance/notices/21-12)：初始和维持保证金区分。
-- [SEC T+1 交收](https://www.sec.gov/newsroom/press-releases/2024-62)：美股现金交收参考。
+1. 在现有 PostgreSQL 中新建专用数据库与最小权限用户，例如 `mingmiao_exchange`。先备份现有数据库；不要清空现有库、复用其他应用的表或更改其用户密码。
+2. 找到 PostgreSQL 容器现有 Docker 网络和容器 DNS 名称。复制 `.env.example` 为 `.env`，设置 `POSTGRES_NETWORK`、专用 `DATABASE_URL`，随机生成长 `ADMIN_PASSWORD`、`BOT_API_TOKEN`、`SESSION_SECRET`。服务器 `.env` 权限设为 600，密钥不进入 Git 或聊天记录。
+3. 在服务器安装目录准备本仓源码、整个 `config/` 与已构建的整个 `frontend/dist/`。数据库不在镜像中；`docker-compose.yml` 不含任何数据库服务或数据卷清理动作。
+4. 在该目录运行：
 
-部署配置验证：`python scripts/check-deploy.py`（需已运行的 Docker；准备临时测试镜像时需联网安装 Python，运行用例全部断网）。使用临时 nginx 容器测试缺证书、错域名、错私钥及有效证书，并对脚本生成的实际 nginx 配置执行 `nginx -t`，不改宿主服务；实际重现 1024 文件描述符软上限引起的 TLS 失败，修复后保持 1200 个双栈 TLS 连接，核验平滑重载、旧代排空、幂等、nginx 重启恢复、硬上限不足或外部定义时不修改配置，以及核验失败的配置回滚。CI 执行同一验证入口。
+```bash
+docker compose config --quiet
+docker compose up -d --build exchange
+docker compose ps
+curl -fsS http://127.0.0.1:8888/healthz
+```
+
+Compose 仅映射 `127.0.0.1:8888`。沿用现有 `stock.azurpilot.com` nginx 反代和证书；SSE 路径需要禁用代理缓冲，应用也发送 `X-Accel-Buffering: no`。检查 `/`、`/console`、静态资源、API 和公网 HTTPS，不能仅以健康检查作为部署成功依据。
+
+若 nginx 全局启用了 `proxy_cache`，本站的代理 location 需设置 `proxy_cache off;`，保证认证接口不被代理缓存，并让 `If-None-Match` 正常到达应用。域名使用 IPv6 时同时核对本站 IPv6 监听与证书，避免请求进入其他虚拟主机。初版部署见 [v2 交付记录](docs/V2_DELIVERY.md)；注册与功能恢复版本的交易所后端及配套交易站、管理站已部署，验收及回滚说明见 [2026-11-01 部署记录](docs/DEPLOYMENT-2026-11-01.md)。
+
+将同一 `BOT_API_TOKEN` 写入插件目录内忽略的 `.data/connection.json`（格式见插件 README），无需改 AstrBot 全局配置。插件加载/热重载和官方机器人真机联调需在 AstrBot 中执行；本项目不会自动重启 AstrBot 容器。
+
+### 只更新站点前端
+
+在本机 `npm run build --prefix frontend` 后，把**整个** `frontend/dist/` 同步到服务器安装目录对应位置。保持该挂载路径不变，无需重建 Go、重启服务；替换目录内容要保留完整资产集合并最后更新 `index.html`，避免旧页面引用已删除资源。
+
+### 更新后端与恢复
+
+后端运行代码更改需要在安装目录重新构建镜像并 `docker compose up -d --build exchange`。Compose 不更新外部 PostgreSQL 容器。保留旧镜像和发布目录，切换前对专用数据库执行 `pg_dump`；有数据库格式变化时，回滚镜像必须配套恢复对应数据库备份。
+
+此次 v2 与改动前仓库的交易端、管理端、AzurPilot 代理和认证均不兼容，需要成套更新。旧 SQLite、账户和会话不自动迁入新 PostgreSQL；旧数据库保留原样，旧实例需要新客户端登记股票。生产服务器未发现旧交易所服务时可以直接部署独立 v2，不影响其他 PostgreSQL 数据库。不要以删除旧数据代替迁移。
+
+## 密钥与运行配置
+
+后端必填 `DATABASE_URL`、`ADMIN_PASSWORD`（至少16字符）、`BOT_API_TOKEN` 与 `SESSION_SECRET`（至少48字符）。默认域名 `stock.azurpilot.com`，默认本机监听 `127.0.0.1:8888`，Compose 内部监听 `0.0.0.0:8888`。`COOKIE_SECURE` 生产保持 true，仅回环 HTTP 开发设为 false。Cookie 为 HttpOnly，玩家与管理员会话隔离；“记住我”30天，否则浏览器会话有效。
+
+`SESSION_SECRET` 同时保护会话与幂等密码重置回执，轮换会使已有会话失效；不要随每次重启重新生成。真实 `.env`、数据库、绑定码、密钥、构建产物及测试报告均不提交。

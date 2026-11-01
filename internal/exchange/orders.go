@@ -1,408 +1,834 @@
 package exchange
 
 import (
-	"database/sql"
-	"encoding/json"
+	"math/big"
+	"sort"
+	"strings"
 	"time"
 )
 
-func (e *Engine) Submit(id int64, in OrderInput) (*Order, error) {
-	if !clientIDPattern.MatchString(in.ClientID) {
-		return nil, fail("INVALID_ORDER", "委托幂等标识无效")
+func taxRate(s Settings, assets int64) int64 {
+	for _, b := range s.TaxBrackets {
+		if b.UpTo == 0 || assets <= b.UpTo {
+			return b.RatePPM
+		}
 	}
-	var result *Order
-	err := e.transaction(func() error {
-		now := e.clock()
-		if err := e.advance(now); err != nil {
+	return 0
+}
+func maximumTax(s Settings) int64 {
+	var n int64
+	for _, b := range s.TaxBrackets {
+		n = max(n, b.RatePPM)
+	}
+	return n
+}
+func commission(s Settings, amount int64) int64 {
+	return max(s.MinCommission, rate(amount, s.CommissionPPM))
+}
+func buying(side string) bool    { return side == "buy" || side == "cover" }
+func borrowing(side string) bool { return side == "short" || side == "cover" }
+
+// 分量分别按比例向下取整；最后一股取尽余数。冻结、可付金额和落账必须复用同一公式。
+func portion(value, quantity, total int64) int64 {
+	if quantity == total {
+		return value
+	}
+	return value/total*quantity + (value%total)*quantity/total
+}
+func shortEscrow(p *Position, quantity int64) (int64, int64) {
+	return portion(p.ShortProceeds, quantity, p.ShortQuantity), portion(p.Collateral, quantity, p.ShortQuantity)
+}
+func executionPrice(s *Stock, side string, quantity int64, rules Settings) (int64, int64) {
+	if !newTaxes(rules) {
+		return s.Price, 0
+	}
+	used, limit := s.NormalUsed, s.HourlyVolume
+	if borrowing(side) {
+		used, limit = s.BorrowUsed, s.BorrowHourlyVolume
+	}
+	utilization := min(int64(1_000_000), (used*1_000_000+quantity*500000)/max(int64(1), limit))
+	premium := rules.PremiumPPM * utilization / 1_000_000
+	adjust := rate(s.Price, premium)
+	if buying(side) {
+		return min(MaxPrice, s.Price+adjust), premium
+	}
+	return max(int64(1), s.Price-adjust), premium
+}
+func reserveFor(in OrderInput, rules Settings, p *Position) int64 {
+	r := effectiveRules(rules)
+	notional := in.Price * in.Quantity
+	fees := FeesFor(r, in.Side, notional)
+	fees.Commission = max(fees.Commission, r.MinCommission*((in.Quantity+r.LotSize-1)/r.LotSize))
+	tax := int64(0)
+	if newTaxes(rules) {
+		tax = rate(notional, maximumTax(rules))
+	}
+	if in.Side == "sell" {
+		return 0
+	}
+	reserve := notional + tax + fees.Total()
+	if in.Side == "buy" || in.Side == "short" {
+		reserve = rate(notional, leverageMargin(in.Side, in.Leverage, r)) + tax + fees.Total()
+	}
+	if in.Side == "cover" && p != nil && p.ShortQuantity > 0 {
+		proceeds, collateral := shortEscrow(p, in.Quantity)
+		return max(int64(0), reserve-proceeds-collateral)
+	}
+	return reserve
+}
+func (m *mutation) pendingQuantity(accountID, stockID int64, side string, except int64) int64 {
+	var n int64
+	for id := range m.e.pending {
+		old := m.e.orders[id]
+		o := old
+		if fresh := m.orders[id]; fresh != nil {
+			o = fresh
+		}
+		if id != except && o.AccountID == accountID && o.StockID == stockID && o.Side == side && o.Status == "pending" {
+			n += o.Remaining
+		}
+	}
+	return n
+}
+func (m *mutation) validateOrder(a *Account, s *Stock, in OrderInput) error {
+	if a == nil || a.Disabled {
+		return fail("UNAUTHORIZED", "账户不可用")
+	}
+	if err := accountReady(a, m.readStock); err != nil {
+		return err
+	}
+	if m.meta.Settings.Paused {
+		return fail("MARKET_PAUSED", "交易所暂停交易")
+	}
+	if open, reason := m.marketOpen(m.e.clock().UnixMilli()); !open {
+		return fail("MARKET_CLOSED", reason)
+	}
+	r := effectiveRules(m.meta.Settings)
+	if !validLeverage(in.Side, in.Leverage, r) {
+		return fail("INVALID_LEVERAGE", "杠杆超过当前初始保证金规则允许范围")
+	}
+	if a.BoundStockID == s.ID {
+		return fail("SELF_TRADE", "不能交易自己绑定的股票")
+	}
+	if s.DeletedAt != 0 {
+		return fail("STOCK_DELETED", "股票已被管理员删除")
+	}
+	if s.Disabled {
+		return fail("STOCK_DISABLED", "股票已停牌")
+	}
+	if s.Delisted {
+		return fail("STOCK_DELISTED", "该股票已退市")
+	}
+	if s.Price <= 0 {
+		return fail("ZERO_QUOTE", "股票尚无有效报价")
+	}
+	if m.e.clock().UnixMilli()-s.ObservedAt > r.QuoteTTLSeconds*1000 {
+		return fail("STALE_QUOTE", "报价已过期，等待实例同步")
+	}
+	if in.Kind != "limit" && in.Kind != "market" && in.Kind != "stop" {
+		return fail("INVALID_ORDER", "委托类型无效")
+	}
+	if in.TimeInForce != "DAY" && in.TimeInForce != "GTC" {
+		return fail("INVALID_ORDER", "委托有效期无效")
+	}
+	if in.Side != "buy" && in.Side != "sell" && in.Side != "short" && in.Side != "cover" {
+		return fail("INVALID_ORDER", "交易方向无效")
+	}
+	if in.Quantity < 1 || in.Quantity > LedgerLimit/MaxPrice/8 || in.Price < 1 || in.Price > MaxPrice || len(in.ClientID) < 8 || len(in.ClientID) > 128 || strings.ContainsAny(in.ClientID, "\r\n\x00") {
+		return fail("INVALID_ORDER", "数量、整数分价格或幂等标识无效")
+	}
+	if in.Side == "short" && s.AccountID == 0 {
+		return fail("SHORT_UNBOUND", "仅允许卖空已绑定交易账户的股票")
+	}
+	if in.Quantity%r.LotSize != 0 {
+		return fail("INVALID_LOT", "数量须符合当前市场整手单位")
+	}
+	p := a.Positions[s.ID]
+	if p != nil && ((in.Side == "buy" && p.ShortQuantity > 0) || (in.Side == "short" && p.Quantity > 0)) {
+		return fail("OPPOSITE_POSITION", "请先平掉相反方向的持仓")
+	}
+	if (in.Side == "buy" && m.pendingQuantity(a.ID, s.ID, "short", 0) > 0) || (in.Side == "short" && m.pendingQuantity(a.ID, s.ID, "buy", 0) > 0) {
+		return fail("OPPOSITE_POSITION", "请先撤销相反方向开仓挂单")
+	}
+	if in.Side == "sell" {
+		if p == nil || sellable(p, m.e.clock().UnixMilli())-m.pendingQuantity(a.ID, s.ID, "sell", 0) < in.Quantity {
+			return fail("INSUFFICIENT_POSITION", "可卖持仓不足")
+		}
+	}
+	if in.Side == "cover" {
+		if p == nil || p.ShortQuantity-m.pendingQuantity(a.ID, s.ID, "cover", 0) < in.Quantity {
+			return fail("INSUFFICIENT_SHORT", "可回补数量不足")
+		}
+	}
+	// 预留全部现有持仓与待开仓在最高报价下的累计整数空间。
+	budget := LedgerLimit / MaxPrice / 8
+	for _, pos := range a.Positions {
+		if pos.Quantity > budget || pos.ShortQuantity > budget-pos.Quantity {
+			return fail("NUMERICAL_LIMIT", "账户累计持仓超出整数安全范围")
+		}
+		budget -= pos.Quantity + pos.ShortQuantity
+	}
+	for oid := range m.e.pending {
+		o := m.e.orders[oid]
+		if fresh := m.orders[oid]; fresh != nil {
+			o = fresh
+		}
+		if o.AccountID == a.ID && o.Status == "pending" && (o.Side == "buy" || o.Side == "short") {
+			if o.Remaining > budget {
+				return fail("NUMERICAL_LIMIT", "账户累计挂单超出整数安全范围")
+			}
+			budget -= o.Remaining
+		}
+	}
+	if (in.Side == "buy" || in.Side == "short") && in.Quantity > budget {
+		return fail("NUMERICAL_LIMIT", "账户累计数量超出整数安全范围")
+	}
+	reserve := reserveFor(in, m.meta.Settings, p)
+	if reserve > availableCash(a, m.e.clock().UnixMilli()) {
+		return fail("INSUFFICIENT_CASH", "可用现金不足（含最高税档和部分成交费用预留）")
+	}
+	return nil
+}
+func (e *Engine) Preview(id int64, in OrderInput) (*Preview, error) {
+	in.Leverage = max(int64(1), in.Leverage)
+	if in.Kind == "" {
+		in.Kind = "limit"
+	}
+	if in.TimeInForce == "" {
+		in.TimeInForce = "GTC"
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s, err := e.resolve(in.Stock, id)
+	if err != nil {
+		return nil, err
+	}
+	m := &mutation{e: e, meta: e.meta, orders: map[int64]*Order{}}
+	a := e.accounts[id]
+	if in.Kind == "market" {
+		in.Price = s.Price
+	}
+	if o := e.orders[e.byClient[orderKey(id, in.ClientID)]]; o != nil {
+		if o.StockID != s.ID || o.Side != in.Side || o.Quantity != in.Quantity || (in.Kind != "market" && o.Price != in.Price) || o.Leverage != in.Leverage || o.Kind != in.Kind || o.TimeInForce != in.TimeInForce {
+			return nil, fail("IDEMPOTENCY_CONFLICT", "同一幂等标识不能用于不同委托")
+		}
+	}
+	if err = m.validateOrder(a, s, in); err != nil {
+		return nil, err
+	}
+	assets := equity(a, func(id int64) *Stock { return e.stocks[id] })
+	notional := in.Quantity * in.Price
+	tr := int64(0)
+	if newTaxes(e.meta.Settings) {
+		tr = taxRate(e.meta.Settings, assets)
+	}
+	tax := rate(notional, tr)
+	marketRules := effectiveRules(e.meta.Settings)
+	fees := FeesFor(marketRules, in.Side, notional)
+	fee := fees.Commission
+	total := notional + tax + fees.Total()
+	if in.Side == "sell" {
+		total = notional - tax - fees.Total()
+	}
+	if in.Side == "buy" || in.Side == "short" {
+		total = rate(notional, leverageMargin(in.Side, in.Leverage, marketRules)) + tax + fees.Total()
+	}
+	_, premium := executionPrice(s, in.Side, min(in.Quantity, max(int64(1), s.HourlyVolume)), e.meta.Settings)
+	p := &Preview{Kind: in.Kind, TimeInForce: in.TimeInForce, Leverage: max(int64(1), in.Leverage), Rules: marketRules, Stamp: fees.Stamp, Levy: fees.Levy, PreviewID: randomToken(24), ExpiresAt: e.clock().UnixMilli() + 300000, Stock: publicStock(s), Side: in.Side, Quantity: in.Quantity, Price: in.Price, Notional: notional, TaxRatePPM: tr, Tax: tax, Commission: fee, EstimatedTotal: total, PremiumPPM: premium, AccountID: id, Input: in}
+	if in.Side == "sell" {
+		pos := a.Positions[s.ID]
+		p.Repayment = portion(pos.Loan, in.Quantity, pos.Quantity)
+		p.EstimatedTotal -= p.Repayment
+	}
+	p.GameRules = gameSnapshot(e.meta.Settings)
+	if in.Side == "buy" {
+		p.Financing = notional - rate(notional, leverageMargin(in.Side, in.Leverage, marketRules))
+	}
+	if in.Side == "short" {
+		p.Collateral = rate(notional, leverageMargin(in.Side, in.Leverage, marketRules))
+	}
+	e.previews[p.PreviewID] = p
+	copy := *p
+	return &copy, nil
+}
+func (e *Engine) Confirm(id int64, previewID string) (*Order, error) {
+	var out *Order
+	err := e.transaction(func(m *mutation) error {
+		if err := accountReady(m.readAccount(id), m.readStock); err != nil {
 			return err
 		}
-		p := e.players[id]
-		if p == nil || p.Disabled {
-			return fail("UNAUTHORIZED", "账户不可用")
-		}
-		for _, o := range p.Orders {
-			if o.ClientID == in.ClientID {
-				copy := *o
-				result = &copy
-				return nil
-			}
-		}
-		var raw string
-		err := e.db.QueryRow("SELECT data FROM receipts WHERE player_id=? AND client_id=?", id, in.ClientID).Scan(&raw)
-		if err == nil {
-			var o Order
-			if err = json.Unmarshal([]byte(raw), &o); err != nil {
-				return err
-			}
-			result = &o
+		if o := e.orders[e.byPreview[orderKey(id, previewID)]]; o != nil {
+			x := *o
+			out = &x
 			return nil
 		}
-		if err != sql.ErrNoRows {
+		p := e.previews[previewID]
+		if p == nil || p.AccountID != id || p.ExpiresAt < e.clock().UnixMilli() {
+			return fail("PREVIEW_EXPIRED", "交易确认已过期，请重新预览")
+		}
+		if p.Rules.ID != m.meta.Settings.ActiveMarket.ID {
+			return fail("PREVIEW_RULES_CHANGED", "市场预设已切换，请重新预览交易")
+		}
+		s, err := e.resolve(p.Input.Stock, id)
+		if err != nil {
 			return err
 		}
-		if open, reason := e.isOpen(now); !open {
-			return fail("MARKET_CLOSED", reason)
+		if o := e.orders[e.byClient[orderKey(id, p.Input.ClientID)]]; o != nil {
+			if o.StockID != s.ID || o.Side != p.Side || o.Quantity != p.Quantity || (p.Kind != "market" && o.Price != p.Price) || o.Leverage != p.Leverage || o.Kind != p.Kind || o.TimeInForce != p.TimeInForce {
+				return fail("IDEMPOTENCY_CONFLICT", "幂等标识对应不同委托")
+			}
+			x := *o
+			out = &x
+			return nil
 		}
-		if in.StockID == id {
-			return fail("SELF_TRADE", "不能交易自己的股票，避免利用自报股价套利")
-		}
-		stock := e.players[in.StockID]
-		if stock == nil || stock.Disabled {
-			return fail("NOT_FOUND", "该股票不存在或已停牌")
-		}
-		if stock.Delisted {
-			return fail("STOCK_DELISTED", "该股票本月已退市，下月重新判断上市资格")
-		}
-		r := e.state.Settings.Active
-		if !e.quoteFresh(stock, now.Unix()) {
-			return fail("STALE_QUOTE", "该股票行动力报价已过期，等待持有人同步")
-		}
-		if in.Side != "buy" && in.Side != "sell" && in.Side != "short" && in.Side != "cover" {
-			return fail("INVALID_ORDER", "委托方向无效")
-		}
-		if err := validateLeverage(in.Side, in.Leverage, r); err != nil {
+		a := m.readAccount(id)
+		if err := m.auction(e.clock().UnixMilli()); err != nil {
 			return err
 		}
-		if in.Kind != "market" && in.Kind != "limit" && in.Kind != "stop" {
-			return fail("INVALID_ORDER", "委托类型无效")
-		}
-		if in.TIF != "DAY" && in.TIF != "GTC" {
-			return fail("INVALID_ORDER", "有效期需为 DAY 或 GTC")
-		}
-		if in.Quantity < 1 || in.Quantity%r.LotSize != 0 {
-			return fail("INVALID_ORDER", "数量须为正整数并符合整手单位")
-		}
-		if in.Quantity > LedgerSafetyLimit/MaxQuotePrice {
-			return fail("NUMERICAL_LIMIT", "委托数量超出整数账本安全边界")
-		}
-		if in.Kind != "market" && (in.Limit < 1 || in.Limit > 100_000_000) {
-			return fail("INVALID_ORDER", "委托价格须在 0.01–1,000,000 之间")
-		}
-		p = e.touch(id)
-		e.accrue(p, now.Unix())
-		o := &Order{ID: e.state.NextOrder, ClientID: in.ClientID, StockID: in.StockID, Side: in.Side, Kind: in.Kind, TIF: in.TIF, Quantity: in.Quantity, Limit: in.Limit, Leverage: in.Leverage, Status: "pending", CreatedAt: now.Unix(), Rules: r}
-		e.state.NextOrder++
-		if in.TIF == "DAY" {
-			l, _ := loadLocation(r.Timezone)
-			t := now.In(l)
-			o.ExpiresAt = time.Date(t.Year(), t.Month(), t.Day()+1, 0, 0, 0, 0, l).Unix()
-		}
-		if err := e.validatePosition(p, o, now.Unix()); err != nil {
-			return err
-		}
-		price := stock.Quote.Price
-		if o.Kind != "market" {
-			price = o.Limit
-		}
-		amount := price * o.Quantity
-		fees := FeesFor(r, o.Side, amount).Total()
-		if o.Side == "buy" {
-			o.Reserved = rate(amount, orderMargin(o, r)) + fees
-		}
-		if o.Side == "short" {
-			o.Reserved = rate(amount, orderMargin(o, r)) + fees
-		}
-		if o.Reserved > e.account(p, now.Unix()).Available {
-			return fail("INSUFFICIENT_CASH", "可用资金不足（含费用、保证金与挂单冻结）")
-		}
-		p.Orders = append(p.Orders, o)
-		if e.triggered(o, stock.Quote.Price) {
-			if err := e.fill(p, o, stock.Quote.Price, now, false); err != nil {
-				return err
+		a = m.readAccount(id)
+		currentSettings := m.meta.Settings
+		err = m.validateOrder(a, s, p.Input)
+		if publicErrorOptionalCode(err) == "INSUFFICIENT_CASH" {
+			snapshot := withGameSnapshot(snapshotSettings(currentSettings, p.Rules), p.GameRules)
+			reserve := reserveFor(p.Input, snapshot, a.Positions[s.ID])
+			if reserve <= availableCash(a, e.clock().UnixMilli()) {
+				err = nil
 			}
 		}
-		copy := *o
-		result = &copy
+		if err != nil {
+			return err
+		}
+		reserved := reserveFor(p.Input, withGameSnapshot(snapshotSettings(m.meta.Settings, p.Rules), p.GameRules), a.Positions[s.ID])
+		if reserved > availableCash(a, e.clock().UnixMilli()) {
+			return fail("INSUFFICIENT_CASH", "可用现金不足以冻结已确认费用快照")
+		}
+		a = m.account(id)
+		expires := int64(0)
+		if p.TimeInForce == "DAY" {
+			loc, _ := MarketLocation(p.Rules.Timezone)
+			now := e.clock().In(loc)
+			expires = time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc).UnixMilli()
+		}
+		o := &Order{Kind: p.Kind, TimeInForce: p.TimeInForce, ExpiresAt: expires, Leverage: p.Leverage, Rules: p.Rules, ID: m.meta.NextOrder, AccountID: id, ClientID: p.Input.ClientID, PreviewID: previewID, StockID: s.ID, Side: p.Side, Quantity: p.Quantity, Remaining: p.Quantity, Price: p.Price, Status: "pending", CreatedAt: e.clock().UnixMilli(), UpdatedAt: e.clock().UnixMilli(), EligibleHour: e.clock().Unix()/3600 + 1}
+		m.meta.NextOrder++
+		o.GameRules = p.GameRules
+		o.Reserved = reserved
+		a.Reserved += o.Reserved
+		m.orders[o.ID] = o
+		m.changed = true
+		s = m.stock(s.ID)
+		m.refreshHour(s, e.clock().UnixMilli())
+		if err = m.fill(a, s, o, e.clock().UnixMilli(), false); err != nil {
+			return err
+		}
+		x := *o
+		out = &x
 		return nil
 	})
-	return result, err
+	return out, err
 }
-func (e *Engine) validatePosition(p *Player, o *Order, now int64) error {
-	if o.Side == "buy" || o.Side == "short" {
-		if p.Cash > LedgerSafetyLimit || p.Cash < -LedgerSafetyLimit {
-			return fail("NUMERICAL_LIMIT", "账户已到整数账本安全边界，请先平仓")
+func (m *mutation) refreshHour(s *Stock, now int64) {
+	hour := now / 3600000
+	if s.Hour != hour {
+		s.Hour = hour
+		s.NormalUsed = 0
+		s.BorrowUsed = 0
+	}
+}
+func (m *mutation) release(a *Account, o *Order) { a.Reserved -= o.Reserved; o.Reserved = 0 }
+func (m *mutation) cancel(a *Account, o *Order, now int64, reason string) {
+	m.release(a, o)
+	o.Status = "cancelled"
+	o.Reason = reason
+	o.UpdatedAt = now
+}
+func (e *Engine) Cancel(id, orderID int64) (*Order, error) {
+	var out *Order
+	err := e.transaction(func(m *mutation) error {
+		o := e.orders[orderID]
+		if o == nil || o.AccountID != id {
+			return fail("NOT_FOUND", "委托不存在")
 		}
-		remaining := LedgerSafetyLimit / MaxQuotePrice
-		consume := func(q int64) bool {
-			if q < 0 {
-				q = -q
-			}
-			if q < 0 || q > remaining {
-				return false
-			}
-			remaining -= q
-			return true
+		if o.Status != "pending" {
+			x := *o
+			out = &x
+			return nil
 		}
-		for _, v := range p.Positions {
-			if !consume(v.Quantity) {
-				return fail("NUMERICAL_LIMIT", "最坏报价下的持仓超出整数账本安全边界")
-			}
+		a := m.account(id)
+		o = m.order(orderID)
+		m.cancel(a, o, e.clock().UnixMilli(), "用户取消")
+		x := *o
+		out = &x
+		return nil
+	})
+	return out, err
+}
+func (m *mutation) fill(a *Account, s *Stock, o *Order, now int64, forced bool) error {
+	rules := m.meta.Settings
+	currentRules := effectiveRules(rules)
+	if len(o.GameRules.TaxBrackets) > 0 {
+		rules = withGameSnapshot(rules, o.GameRules)
+	}
+	r := o.Rules
+	if r.ID == "" {
+		r = effectiveRules(rules)
+	}
+	if o.Remaining <= 0 {
+		return nil
+	}
+	if !forced && (a.BoundStockID == 0 || m.readStock(a.BoundStockID) == nil || m.readStock(a.BoundStockID).DeletedAt != 0) {
+		m.cancel(a, o, now, "账户未绑定股票，撤销委托")
+		return nil
+	}
+	if !forced && a.BoundStockID == s.ID {
+		m.cancel(a, o, now, "账户已绑定该股票，禁止自我交易")
+		return nil
+	}
+	if !forced {
+		open, _ := m.marketOpen(now)
+		if !open || a.Disabled || a.ForcePasswordChange || s.Disabled || s.DeletedAt != 0 || s.Delisted || s.Price <= 0 || now-s.ObservedAt > effectiveRules(rules).QuoteTTLSeconds*1000 {
+			return nil
 		}
-		for _, v := range p.Orders {
-			if v.ID != o.ID && v.Status == "pending" && (v.Side == "buy" || v.Side == "short") && !consume(v.Quantity) {
-				return fail("NUMERICAL_LIMIT", "持仓与开仓委托超出整数账本安全边界")
-			}
-		}
-		if !consume(o.Quantity) {
-			return fail("NUMERICAL_LIMIT", "新增持仓超出整数账本安全边界")
+		if !validLeverage(o.Side, o.Leverage, effectiveRules(rules)) {
+			m.cancel(a, o, now, "杠杆已超过当前保证金允许范围")
+			return nil
 		}
 	}
-	pos := p.Positions[o.StockID]
-	qty := int64(0)
-	if pos != nil {
-		qty = pos.Quantity
+	if err := m.accrue(a, s.ID, now); err != nil {
+		return err
 	}
-	if (o.Side == "buy" && qty < 0) || (o.Side == "short" && qty > 0) {
-		return fail("OPPOSITE_POSITION", "先平掉相反方向的持仓，再开新仓")
+	m.settleCash(a, now)
+	quantity := o.Remaining
+	available := s.HourlyVolume - s.NormalUsed
+	if borrowing(o.Side) {
+		available = s.BorrowHourlyVolume - s.BorrowUsed
 	}
-	for _, v := range p.Orders {
-		if v.ID == o.ID || v.StockID != o.StockID || v.Status != "pending" {
-			continue
+	if !forced {
+		quantity = min(quantity, max(int64(0), available))
+	}
+	if o.Side == "buy" {
+		quantity = min(quantity, max(int64(0), s.IssuedShares-s.Outstanding))
+	}
+	if o.Side == "short" {
+		if s.AccountID == 0 {
+			return nil
 		}
-		if (o.Side == "buy" && v.Side == "short") || (o.Side == "short" && v.Side == "buy") {
-			return fail("OPPOSITE_POSITION", "已有相反方向的开仓委托，请先撤单")
-		}
+		quantity = min(quantity, max(int64(0), s.BorrowShares-s.Borrowed))
+	}
+	p := a.Positions[s.ID]
+	if !forced && p != nil && ((o.Side == "buy" && p.ShortQuantity > 0) || (o.Side == "short" && p.Quantity > 0)) {
+		m.cancel(a, o, now, "相反方向持仓冲突")
+		o.Status = "rejected"
+		return nil
+	}
+	if p == nil {
+		p = &Position{StockID: s.ID, BorrowAt: now}
+		a.Positions[s.ID] = p
 	}
 	if o.Side == "sell" {
-		avail := int64(0)
-		if pos != nil && qty > 0 {
-			for _, lot := range pos.Lots {
-				if lot.AvailableAt <= now {
-					avail += lot.Quantity
-				}
-			}
-		}
-		for _, v := range p.Orders {
-			if v.ID != o.ID && v.StockID == o.StockID && v.Side == "sell" && v.Status == "pending" {
-				avail -= v.Quantity
-			}
-		}
-		if o.Quantity > avail {
-			return fail("INSUFFICIENT_SHARES", "可卖股份不足，可能受 T+N 或已有卖单限制")
+		if forced {
+			quantity = min(quantity, p.Quantity)
+		} else {
+			quantity = min(quantity, sellable(p, now))
 		}
 	}
 	if o.Side == "cover" {
-		avail := -min(qty, 0)
-		for _, v := range p.Orders {
-			if v.ID != o.ID && v.StockID == o.StockID && v.Side == "cover" && v.Status == "pending" {
-				avail -= v.Quantity
+		quantity = min(quantity, p.ShortQuantity)
+	}
+	lot := int64(1)
+	if !forced {
+		lot = r.LotSize
+		quantity = quantity / lot * lot
+	}
+	if quantity <= 0 {
+		return nil
+	}
+	price, _ := executionPrice(s, o.Side, quantity, rules)
+	if forced {
+		price = s.Price
+	}
+	if !forced && o.Kind == "stop" && !o.Triggered {
+		if (buying(o.Side) && s.Price >= o.Price) || (!buying(o.Side) && s.Price <= o.Price) {
+			o.Triggered = true
+		} else {
+			return nil
+		}
+	}
+	if !forced && o.Kind != "market" && o.Kind != "stop" && ((buying(o.Side) && price > o.Price) || (!buying(o.Side) && price < o.Price)) {
+		return nil
+	}
+	tr := int64(0)
+	if newTaxes(rules) {
+		tr = taxRate(rules, equity(a, m.readStock))
+	}
+	calc := func(q int64) (int64, int64, Fees) {
+		amount := q * price
+		return amount, rate(amount, tr), FeesFor(r, o.Side, amount)
+	}
+	free := availableCash(a, now) + o.Reserved
+	ownPPM := leverageMargin(o.Side, o.Leverage, currentRules)
+	cost := func(q int64) int64 {
+		amount, t, f := calc(q)
+		switch o.Side {
+		case "buy", "short":
+			return rate(amount, ownPPM) + t + f.Total()
+		case "cover":
+			proceeds, collateral := shortEscrow(p, q)
+			return max(int64(0), amount+t+f.Total()-proceeds-collateral)
+		case "sell":
+			repayment := portion(p.Loan, q, p.Quantity)
+			return max(int64(0), repayment+t+f.Total()-amount)
+		}
+		return 0
+	}
+	if !forced && cost(quantity) > free {
+		lo, hi := int64(0), quantity/lot
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			if cost(mid*lot) <= free {
+				lo = mid
+			} else {
+				hi = mid - 1
 			}
 		}
-		if o.Quantity > avail {
-			return fail("INSUFFICIENT_SHORT", "可平空仓不足，检查已有回补委托")
+		quantity = lo * lot
+		if quantity == 0 {
+			m.cancel(a, o, now, "现金不足以支付成交费用或融资本金")
+			o.Status = "rejected"
+			return nil
 		}
 	}
-	return nil
-}
-func (e *Engine) triggered(o *Order, price int64) bool {
-	if o.Kind == "market" {
-		return true
-	}
-	buy := o.Side == "buy" || o.Side == "cover"
-	if o.Kind == "limit" {
-		if buy {
-			return price <= o.Limit
-		}
-		return price >= o.Limit
-	}
-	if buy {
-		return price >= o.Limit
-	}
-	return price <= o.Limit
-}
-func (e *Engine) fill(p *Player, o *Order, price int64, now time.Time, forced bool) error {
-	if !forced {
-		if err := validateLeverage(o.Side, o.Leverage, e.state.Settings.Active); err != nil {
-			return err
-		}
-		if err := e.validatePosition(p, o, now.Unix()); err != nil {
-			return err
-		}
-	}
-	amount := price * o.Quantity
-	fees := FeesFor(o.Rules, o.Side, amount)
-	a := e.account(p, now.Unix())
-	available := a.Available + o.Reserved
-	own := rate(amount, orderMargin(o, e.state.Settings.Active))
-	if !forced && o.Side == "buy" && own+fees.Total() > available {
-		return fail("INSUFFICIENT_CASH", "触发时可用资金不足，委托无法成交")
-	}
-	if !forced && o.Side == "short" && own+fees.Total() > available {
-		return fail("INSUFFICIENT_MARGIN", "触发时做空保证金不足")
-	}
-	pos := p.Positions[o.StockID]
-	if pos == nil {
-		pos = &Position{StockID: o.StockID, Lots: []Lot{}}
-		p.Positions[o.StockID] = pos
-	}
+	notional, tax, fees := calc(quantity)
+	m.release(a, o)
+	feeBudget := tax + fees.Total()
 	switch o.Side {
 	case "buy":
-		addMargin(pos, o.Quantity, orderMargin(o, e.state.Settings.Active), e.state.Settings.Active)
-		loan := amount - own
-		p.Cash -= own
-		pos.Loan += loan
-		if pos.Loan > 0 {
-			pos.FinancingAt = now.Unix()
-		}
-		pos.Quantity += o.Quantity
-		pos.Cost += amount + fees.Total()
-		pos.Lots = append(pos.Lots, Lot{o.Quantity, availableAt(now, o.Rules.SellDelayDays, o.Rules)})
+		own := rate(notional, ownPPM)
+		a.Cash -= own + tax + fees.Total()
+		p.Loan += notional - own
+		p.FinancingAt = now
+		p.Quantity += quantity
+		p.Cost += notional + tax + fees.Total()
+		p.Lots = append(p.Lots, Lot{quantity, AvailableAt(time.UnixMilli(now), r.SellDelayDays, r)})
+		s.Outstanding += quantity
 	case "sell":
-		reduceMargin(pos, o.Quantity, e.state.Settings.Active)
-		repayment := proportional(pos.Loan, o.Quantity, pos.Quantity)
-		pos.Loan -= repayment
-		cost := pos.Cost/pos.Quantity*o.Quantity + pos.Cost%pos.Quantity*o.Quantity/pos.Quantity
-		pos.Cost -= cost
-		pos.Quantity -= o.Quantity
-		p.Cash += amount - repayment
-		p.Realized += amount - fees.Total() - cost
-		left := o.Quantity
-		for i := range pos.Lots {
-			lot := &pos.Lots[i]
-			if lot.AvailableAt <= now.Unix() || forced {
-				take := min(left, lot.Quantity)
-				lot.Quantity -= take
+		repayment := portion(p.Loan, quantity, p.Quantity)
+		net := notional - repayment - tax - fees.Total()
+		if forced {
+			feeBudget = min(feeBudget, max(int64(0), notional+a.Cash-a.Reserved-repayment))
+		}
+		if forced && net < -(a.Cash-a.Reserved) {
+			net = -(a.Cash - a.Reserved)
+		}
+		a.Cash += net
+		p.Loan -= repayment
+		closedCost := portion(p.Cost, quantity, p.Quantity)
+		a.Realized += notional - tax - fees.Total() - closedCost
+		p.Cost -= closedCost
+		p.Quantity -= quantity
+		s.Outstanding -= quantity
+		left := quantity
+		for i := range p.Lots {
+			entry := &p.Lots[i]
+			if entry.AvailableAt <= now || forced {
+				take := min(left, entry.Quantity)
+				entry.Quantity -= take
 				left -= take
 			}
 		}
-		lots := []Lot{}
-		for _, lot := range pos.Lots {
-			if lot.Quantity > 0 {
-				lots = append(lots, lot)
+		kept := p.Lots[:0]
+		for _, entry := range p.Lots {
+			if entry.Quantity > 0 {
+				kept = append(kept, entry)
 			}
 		}
-		pos.Lots = lots
-		if o.Rules.CashDelayDays > 0 && !forced {
-			p.Settlements = append(p.Settlements, Settlement{max(int64(0), amount-repayment-fees.Total()), availableAt(now, o.Rules.CashDelayDays, o.Rules)})
+		p.Lots = kept
+		if p.Loan == 0 {
+			p.FinancingRemainder = 0
+		}
+		if r.CashDelayDays > 0 && !forced && net > 0 {
+			a.Settlements = append(a.Settlements, Settlement{net, AvailableAt(time.UnixMilli(now), r.CashDelayDays, r)})
 		}
 	case "short":
-		addMargin(pos, o.Quantity, orderMargin(o, e.state.Settings.Active), e.state.Settings.Active)
-		p.Cash += amount
-		pos.Quantity -= o.Quantity
-		pos.Cost += amount - fees.Total()
-		pos.BorrowAt = now.Unix()
+		collateral := rate(notional, ownPPM)
+		a.Cash -= collateral + tax + fees.Total()
+		p.ShortQuantity += quantity
+		p.ShortProceeds += notional
+		p.ShortCost += notional - tax - fees.Total()
+		p.Collateral += collateral
+		p.BorrowAt = now
+		s.Borrowed += quantity
 	case "cover":
-		if !forced && p.Cash-amount-fees.Total() < a.Unsettled {
-			return fail("INSUFFICIENT_CASH", "回补资金不足，先卖出多头持仓或等待交收")
+		proceeds, collateral := shortEscrow(p, quantity)
+		totalCost := notional + tax + fees.Total()
+		funds := proceeds + collateral + max(int64(0), a.Cash-a.Reserved)
+		if forced && totalCost > funds {
+			totalCost = funds
 		}
-		reduceMargin(pos, o.Quantity, e.state.Settings.Active)
-		cost := pos.Cost/(-pos.Quantity)*o.Quantity + pos.Cost%(-pos.Quantity)*o.Quantity/(-pos.Quantity)
-		pos.Cost -= cost
-		pos.Quantity += o.Quantity
-		p.Cash -= amount
-		p.Realized += cost - amount - fees.Total()
+		if forced {
+			feeBudget = min(feeBudget, max(int64(0), totalCost-notional))
+		}
+		a.Cash += proceeds + collateral - totalCost
+		loss := max(int64(0), notional-proceeds)
+		if forced {
+			loss = min(loss, max(int64(0), totalCost-proceeds))
+		}
+		if loss > 0 && s.AccountID != 0 {
+			issuer := m.account(s.AccountID)
+			if issuer == nil {
+				return fail("INVALID_ISSUER", "股票绑定账户缺失")
+			}
+			if issuer.Cash > LedgerLimit-loss {
+				return fail("NUMERICAL_LIMIT", "发行者现金超出安全范围")
+			}
+			issuer.Cash += loss
+		}
+		closedCost := portion(p.ShortCost, quantity, p.ShortQuantity)
+		a.Realized += closedCost - notional - tax - fees.Total()
+		p.ShortCost -= closedCost
+		p.ShortQuantity -= quantity
+		p.ShortProceeds -= proceeds
+		p.Collateral -= collateral
+		if p.ShortQuantity == 0 {
+			p.BorrowRemainder = 0
+		}
+		s.Borrowed -= quantity
 	}
-	p.Cash -= fees.Total()
-	p.Fees.Add(fees)
-	e.state.Season.Revenue.Add(fees)
-	e.state.LifetimeRevenue.Add(fees)
-	o.Status = "filled"
-	o.ExecutedAt = now.Unix()
-	o.Price = price
-	o.Fees = fees
-	o.Reserved = 0
-	e.trades = append(e.trades, Trade{ID: o.ID, StockID: o.StockID, Username: p.Username, Side: o.Side, Kind: o.Kind, Quantity: o.Quantity, Price: price, Time: now.UnixMilli(), Forced: forced})
-	if pos.Quantity == 0 {
-		delete(p.Positions, o.StockID)
+	if forced && feeBudget < tax+fees.Total() {
+		oldFees := tax + fees.Total()
+		take := func(value int64) int64 { paid := min(value, feeBudget); feeBudget -= paid; return paid }
+		tax = take(tax)
+		fees.Commission = take(fees.Commission)
+		fees.Stamp = take(fees.Stamp)
+		fees.Levy = take(fees.Levy)
+		a.Realized += oldFees - tax - fees.Total()
+	}
+	feeRecord := Revenue{Tax: tax, Commission: fees.Commission, Stamp: fees.Stamp, Levy: fees.Levy}
+	if err := m.recordFees(a, feeRecord); err != nil {
+		return err
+	}
+	t := &Trade{ID: m.meta.NextTrade, OrderID: o.ID, StockID: s.ID, AccountID: a.ID, Username: a.Username, Side: o.Side, Kind: o.Kind, Quantity: quantity, Price: price, Notional: notional, At: now, Forced: forced, Reason: o.Reason, Fees: feeRecord}
+	m.meta.NextTrade++
+	m.trades = append(m.trades, t)
+	o.TradeRecorded = true
+	s.TradeVersion++
+	o.Notional += notional
+	o.Filled += quantity
+	o.Remaining -= quantity
+	o.AveragePrice = o.Notional / o.Filled
+	o.Tax += tax
+	o.Commission += fees.Commission
+	o.Stamp += fees.Stamp
+	o.Levy += fees.Levy
+	o.TaxRatePPM = tr
+	o.UpdatedAt = now
+	if borrowing(o.Side) {
+		s.BorrowUsed += quantity
+	} else {
+		s.NormalUsed += quantity
+	}
+	if o.Remaining == 0 {
+		o.Status = "filled"
+	} else {
+		o.Status = "pending"
+		in := OrderInput{Kind: o.Kind, TimeInForce: o.TimeInForce, Side: o.Side, Quantity: o.Remaining, Price: o.Price, Leverage: o.Leverage}
+		snapshot := rules
+		snapshot.ActiveMarket = r
+		if r.ID == "meow" {
+			snapshot.CommissionPPM = r.CommissionPPM
+			snapshot.MinCommission = r.MinCommission
+		}
+		o.Reserved = min(availableCash(a, now), reserveFor(in, snapshot, p))
+		a.Reserved += o.Reserved
 	}
 	return nil
 }
-func (e *Engine) processOrders(p *Player, now time.Time) {
-	open, _ := e.isOpen(now)
-	for _, o := range p.Orders {
-		if o.Status != "pending" {
+func (m *mutation) accrue(a *Account, stockID, now int64) error {
+	if err := m.accrueFinancing(a, stockID, now); err != nil {
+		return err
+	}
+	p := a.Positions[stockID]
+	if p == nil || p.ShortQuantity == 0 {
+		return nil
+	}
+	if p.BorrowAt == 0 {
+		p.BorrowAt = now
+		return nil
+	}
+	elapsed := now - p.BorrowAt
+	if elapsed <= 0 {
+		return nil
+	}
+	s := m.readStock(stockID)
+	if s == nil {
+		return nil
+	}
+	const denominator = int64(365 * 86400 * 1000 * 1_000_000)
+	numerator := new(big.Int).Mul(big.NewInt(p.ShortQuantity*s.Price), big.NewInt(effectiveRules(m.meta.Settings).BorrowAnnualPPM))
+	numerator.Mul(numerator, big.NewInt(elapsed))
+	numerator.Add(numerator, big.NewInt(p.BorrowRemainder))
+	quotient, remainder := new(big.Int), new(big.Int)
+	quotient.QuoRem(numerator, big.NewInt(denominator), remainder)
+	charge := int64(0)
+	if !quotient.IsInt64() {
+		charge = LedgerLimit
+	} else {
+		charge = quotient.Int64()
+	}
+	charge = min(charge, availableCash(a, now)+p.Collateral)
+	cashCharge := min(charge, availableCash(a, now))
+	if err := m.recordFees(a, Revenue{Borrow: charge}); err != nil {
+		return err
+	}
+	a.Cash -= cashCharge
+	p.Collateral -= charge - cashCharge
+	p.BorrowAt += elapsed
+	p.BorrowRemainder = remainder.Int64()
+	return nil
+}
+func (m *mutation) liquidateStock(s *Stock, now int64) error {
+	if s.Price <= 0 {
+		return nil
+	}
+	for id := range m.e.shortOwners[s.ID] {
+		old := m.readAccount(id)
+		position := old.Positions[s.ID]
+		if position == nil || position.ShortQuantity == 0 {
 			continue
 		}
-		if o.ExpiresAt > 0 && now.Unix() >= o.ExpiresAt {
-			o.Status = "expired"
-			o.Reserved = 0
-			o.Reason = "DAY 委托已到期"
-			continue
-		}
-		stock := e.players[o.StockID]
-		if stock == nil || stock.Disabled || stock.Delisted {
-			o.Status = "cancelled"
-			o.Reserved = 0
-			o.Reason = "股票已停牌"
-			if stock != nil && stock.Delisted {
-				o.Reason = "股票本月已退市"
-			}
-			continue
-		}
-		if !open || !e.quoteFresh(stock, now.Unix()) || !e.triggered(o, stock.Quote.Price) {
-			continue
-		}
-		if err := e.fill(p, o, stock.Quote.Price, now, false); err != nil {
-			o.Status = "rejected"
-			o.Reserved = 0
-			o.Reason = err.Error()
-		}
-	}
-}
-func cancelPending(p *Player, reason string) {
-	for _, o := range p.Orders {
-		if o.Status == "pending" {
-			o.Status = "cancelled"
-			o.Reserved = 0
-			o.Reason = reason
-		}
-	}
-}
-func (e *Engine) forcedClose(p *Player, now time.Time, reason string) {
-	cancelPending(p, reason)
-	// 先卖多头，再回补空头；风控和月末结算不受休市及 T+N 约束。
-	for _, side := range []string{"sell", "cover"} {
-		for stock, pos := range p.Positions {
-			if (side == "sell" && pos.Quantity > 0) || (side == "cover" && pos.Quantity < 0) {
-				e.forcedCloseStock(p, stock, now, reason)
-			}
-		}
-	}
-}
-func (e *Engine) forcedCloseStock(p *Player, stock int64, now time.Time, reason string) {
-	pos := p.Positions[stock]
-	if pos == nil || pos.Quantity == 0 {
-		return
-	}
-	qty, side := pos.Quantity, "sell"
-	if qty < 0 {
-		qty, side = -qty, "cover"
-	}
-	o := &Order{ID: e.state.NextOrder, ClientID: "system_" + symbol(e.state.NextOrder), StockID: stock, Side: side, Kind: "market", TIF: "DAY", Quantity: qty, CreatedAt: now.Unix(), Status: "pending", Reason: reason, Rules: e.state.Settings.Active}
-	e.state.NextOrder++
-	_ = e.fill(p, o, e.players[stock].Quote.Price, now, true)
-	p.Orders = append(p.Orders, o)
-}
-func (e *Engine) risk(p *Player, now time.Time) {
-	a := e.account(p, now.Unix())
-	if (a.ShortLiability > 0 || a.FinancingDebt > 0) && a.Equity < a.MaintenanceMargin {
-		e.forcedClose(p, now, "维持保证金不足，系统强制平仓")
-	}
-}
-func (e *Engine) Cancel(id, orderID int64) error {
-	return e.transaction(func() error {
-		if err := e.advance(e.clock()); err != nil {
+		a := m.account(id)
+		if err := m.accrue(a, s.ID, now); err != nil {
 			return err
 		}
-		p := e.players[id]
-		if p == nil {
-			return fail("NOT_FOUND", "账户不存在")
+		p := a.Positions[s.ID]
+		liability := p.ShortQuantity * s.Price
+		if p.ShortProceeds+p.Collateral-liability >= rate(liability, effectiveRules(m.meta.Settings).MMRPPM) {
+			continue
 		}
-		p = e.touch(id)
-		for _, o := range p.Orders {
-			if o.ID == orderID {
-				if o.Status != "pending" {
-					return fail("ORDER_FINAL", "委托已成交或已结束")
-				}
-				o.Status = "cancelled"
-				o.Reserved = 0
-				return nil
+		for oid := range m.e.pending {
+			oldOrder := m.e.orders[oid]
+			if oldOrder.AccountID == id && oldOrder.Status == "pending" {
+				o := m.order(oid)
+				m.cancel(a, o, now, "保证金不足，强制平仓前取消挂单")
 			}
 		}
-		return fail("NOT_FOUND", "委托不存在")
-	})
+		o := &Order{ID: m.meta.NextOrder, AccountID: id, ClientID: "liquidation-" + idstr(m.meta.NextOrder), StockID: s.ID, Side: "cover", Quantity: p.ShortQuantity, Remaining: p.ShortQuantity, Price: s.Price, Status: "pending", CreatedAt: now, UpdatedAt: now, Reason: "保证金不足强制平仓"}
+		m.meta.NextOrder++
+		m.orders[o.ID] = o
+		if err := m.fill(a, s, o, now, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
-func (e *Engine) Disable(id int64, disabled bool) error {
-	_, err := e.UpdatePlayer(id, AdminPlayerUpdate{Disabled: &disabled})
-	return err
+func (m *mutation) auction(now int64) error {
+	if err := m.advanceSeason(now); err != nil {
+		return err
+	}
+	m.cleanPending(now)
+	// 开赛时只检查一次最新且仍有效的行情；历史补传不会触发后续小时的退市重放。
+	season := m.meta.Season
+	shanghai, _ := MarketLocation("Asia/Shanghai")
+	if m.meta.DelistCheckedStart != season.StartsAt && !season.Settled && now >= season.StartsAt && now < season.EndsAt && time.UnixMilli(now).In(shanghai).Day() >= 5 {
+		ttl := effectiveRules(m.meta.Settings).QuoteTTLSeconds * 1000
+		for id := range m.e.stocks {
+			stock := m.readStock(id)
+			if stock.Delisted || stock.ObservedAt <= 0 || now-stock.ObservedAt > ttl || stock.Price >= m.meta.Settings.DelistThreshold*100 {
+				continue
+			}
+			if err := m.delistStock(m.stock(id), now); err != nil {
+				return err
+			}
+		}
+		m.meta.DelistCheckedStart = season.StartsAt
+		m.changed = true
+	}
+	hour := now / 3600000
+	open, _ := m.marketOpen(now)
+	if m.meta.AuctionHour >= hour && m.meta.AuctionOpen == open {
+		return nil
+	}
+	m.meta.AuctionHour = hour
+	if m.meta.AuctionOpen != open {
+		m.marketChanged = true
+	}
+	m.meta.AuctionOpen = open
+	m.changed = true
+	for id, old := range m.e.stocks {
+		if old.Hour != hour && (old.NormalUsed > 0 || old.BorrowUsed > 0) {
+			s := m.stock(id)
+			m.refreshHour(s, now)
+		}
+	}
+	for sid, owners := range m.e.shortOwners {
+		for accountID := range owners {
+			a := m.account(accountID)
+			if err := m.accrue(a, sid, now); err != nil {
+				return err
+			}
+		}
+	}
+	for sid, owners := range m.e.longOwners {
+		for accountID := range owners {
+			a := m.account(accountID)
+			if err := m.riskLong(a, m.stock(sid), now); err != nil {
+				return err
+			}
+		}
+	}
+	for id, old := range m.e.stocks {
+		hasShort := old.Borrowed > 0
+		if s := m.stocks[id]; s != nil {
+			old = s
+		}
+		if hasShort {
+			if err := m.liquidateStock(m.stock(id), now); err != nil {
+				return err
+			}
+		}
+	}
+	pending := []*Order{}
+	if !open {
+		return nil
+	}
+	for id := range m.e.pending {
+		old := m.e.orders[id]
+		o := old
+		if fresh := m.orders[id]; fresh != nil {
+			o = fresh
+		}
+		if o.Status == "pending" && o.EligibleHour <= hour {
+			pending = append(pending, o)
+		}
+	}
+	sort.Slice(pending, func(i, j int) bool {
+		if pending[i].Price == pending[j].Price {
+			return pending[i].ID < pending[j].ID
+		}
+		return pending[i].Price > pending[j].Price
+	})
+	for _, old := range pending {
+		o := m.order(old.ID)
+		a := m.account(o.AccountID)
+		s := m.stock(o.StockID)
+		if a == nil || s == nil {
+			continue
+		}
+		m.refreshHour(s, now)
+		if err := m.fill(a, s, o, now, false); err != nil {
+			if publicError(err).Code == "INSUFFICIENT_CASH" {
+				m.cancel(a, o, now, "现金不足以支付成交费用")
+				continue
+			}
+			return err
+		}
+		o.EligibleHour = hour + 1
+	}
+	return nil
+}
+func publicErrorOptionalCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	return publicError(err).Code
 }
