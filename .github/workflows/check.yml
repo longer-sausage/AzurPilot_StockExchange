@@ -41,6 +41,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
         working-directory: frontend
       - run: npm run test:e2e --prefix frontend
+      - run: npm run test:ui --prefix frontend
       - uses: actions/upload-artifact@v4
         if: always()
         with:

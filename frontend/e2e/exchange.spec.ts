@@ -81,7 +81,8 @@ async function selectStock(page:Page,name:string){
 async function trade(page:Page,quantity:number,leverage:1|2){
   await page.getByLabel('委托股数').fill(String(quantity))
   await page.getByLabel('委托限价').fill('2000')
-  await page.getByRole('combobox',{name:/买入方式/}).selectOption(String(leverage))
+  await page.getByRole('combobox',{name:/买入方式/}).click()
+  await page.getByRole('option',{name:leverage===1?'现金 / 1 倍':'2 倍杠杆',exact:true}).click()
   const previewResponse=page.waitForResponse(response=>response.url().endsWith('/api/v2/orders/preview')&&response.request().method()==='POST')
   await page.getByRole('button',{name:'预览交易明细'}).click()
   const previewHTTP=await previewResponse
@@ -268,14 +269,14 @@ test('自选跨刷新保存、完整筛选排序、排行榜和账户明细',asy
  await expect(page.locator('.stock-row')).toHaveCount(1)
  await page.getByRole('button',{name:'展开筛选'}).click();await page.getByLabel('最低价格',{exact:true}).fill('2000')
  await expect(page.locator('.stock-row')).toHaveCount(0)
- await page.getByRole('button',{name:'重置筛选与排序'}).click();await page.getByLabel('证券排序').selectOption('price-desc')
+ await page.getByRole('button',{name:'重置筛选与排序'}).click();await page.getByLabel('证券排序').click();await page.getByRole('option',{name:'价格 · 降序',exact:true}).click()
  await page.getByRole('button',{name:'月赛排行榜',exact:true}).click()
  await expect(page.getByRole('heading',{name:'月赛与排行榜'})).toBeVisible()
  await expect(page.locator('tbody tr').filter({hasText:user.username})).toContainText('我')
  await page.getByRole('button',{name:'持仓与委托',exact:true}).click();await page.getByRole('button',{name:'账户明细',exact:true}).click()
  await expect(page.getByText('身份识别码',{exact:true})).toBeVisible();await expect(page.locator('.receipt').first()).toContainText('MMEX-')
  await page.getByRole('button',{name:'交易规则',exact:true}).click();await page.getByRole('button',{name:'名词词典 · 37'}).click()
- await page.getByLabel('搜索交易名词').fill('MACD');await expect(page.locator('.glossary details').filter({hasText:'MACD / DIF / DEA'})).toBeVisible()
+ await page.getByLabel('搜索交易名词').fill('MACD');await expect(page.locator('.glossary').getByRole('button',{name:'MACD / DIF / DEA'})).toBeVisible()
 })
 
 test('图表指标、缩放全屏和亮暗主题持久化，手机行情无溢出',async({page,request})=>{

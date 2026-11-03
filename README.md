@@ -4,7 +4,7 @@
 
 ## 账户与三个组件
 
-- **交易所**：本仓库 Go 后端、React 交易站和 `/console` 管理控制台。交易账本使用外部 PostgreSQL，单进程运行。
+- **交易所**：本仓库 Go 后端、Next.js / React 交易站和 `/console` 管理控制台。前端使用 Cloudflare Kumo、Tailwind CSS 4、Phosphor Icons 和 ECharts，静态导出后由既有 Go 进程提供。交易账本使用外部 PostgreSQL。
 - **AzurPilot**：相邻仓库仅提供实例股票注册、绑定状态与行动力增量上报，不再嵌入交易终端、不代理玩家登录或交易。
 - **AstrBot**：`astrbot_plugin_mingmiao_stock` 插件仅支持官方 QQ 机器人。只修改插件目录，不需要修改 AstrBot 核心、全局配置或操作其 Docker。
 
@@ -58,6 +58,8 @@
 
 Go 版本以 `go.mod`、Node 依赖以 `frontend/package.json` 为准。
 
+前端要求 Node.js 22 及以上。Next.js App Router 定义 `/` 与 `/console`，构建将静态导出复制至既有 `frontend/dist/` 挂载目录，无需安装 Node.js 生产服务。设计约束与所用 Skill 见 [frontend/DESIGN.md](frontend/DESIGN.md)。
+
 ```powershell
 go test ./...
 go vet ./...
@@ -66,6 +68,24 @@ npm ci --prefix frontend
 npm run build --prefix frontend
 ```
 
+### 本地假数据预览（无需 Docker 或数据库）
+
+```powershell
+npm run build --prefix frontend
+npm run preview:demo --prefix frontend
+```
+
+打开 `http://127.0.0.1:5178`，管理入口为 `/console`。本地玩家为 `预览玩家`，密码 `Demo-only-Password!87`；管理员演示密码为 `Demo-only-Admin!87`。用户名 `首次登录演示` 可体验强制改密流程。这些值仅属于本地假数据夹具，不是线上凭据。夹具仅监听回环地址，不连接线上 API 或 PostgreSQL，重启即恢复初始状态，也不会进入 `frontend/dist/`。
+
+浏览器 UI 验证使用相同的生产静态产物和本地夹具：
+
+```powershell
+npm exec --prefix frontend -- playwright install chromium
+npm run test:ui --prefix frontend
+```
+
+该组用例覆盖布局、控件、登录、交易请求及管理交互，不能代替真实 PostgreSQL 账本验证。连接本地 Go 开发服务时使用 `npm run dev --prefix frontend`，Next.js 开发代理默认转发至 `127.0.0.1:8888`，可用 `EXCHANGE_API_PORT` 调整；生产静态导出没有代理配置。
+
 真实 PostgreSQL 测试使用专用隔离数据库，绝不能填生产库。浏览器测试要求本机回环 PostgreSQL，测试会创建模拟账户与股票：
 
 ```powershell
@@ -73,7 +93,7 @@ $env:EXCHANGE_E2E_DATABASE_URL='postgres://postgres:isolated-test-only@127.0.0.1
 npm run test:e2e --prefix frontend
 ```
 
-E2E 从当前 Go 源码启动独立后端，默认 `127.0.0.1:18889` 与前端 `127.0.0.1:5178`。不使用旧 `bin/` 程序、不连接生产服务，也没有生产 Mock 模式。
+先执行前端构建。E2E 从当前 Go 源码启动独立后端，默认 `127.0.0.1:18889`，并在 `127.0.0.1:5178` 提供当前 `frontend/dist/` 和同源 API 代理。不使用旧 `bin/` 程序，不连接生产服务。假数据夹具只在显式运行 `preview:demo` 或 `test:ui` 时启用，正式前端没有 Mock 模式。
 
 ## Docker Compose 部署
 
@@ -100,6 +120,10 @@ Compose 仅映射 `127.0.0.1:8888`。沿用现有 `stock.azurpilot.com` nginx �
 ### 只更新站点前端
 
 在本机 `npm run build --prefix frontend` 后，把**整个** `frontend/dist/` 同步到服务器安装目录对应位置。保持该挂载路径不变，无需重建 Go、重启服务；替换目录内容要保留完整资产集合并最后更新 `index.html`，避免旧页面引用已删除资源。
+
+Next.js 产物包含 `/_next/`，必须和 HTML 一起发布，不能只上传首页。沿用现有 Go 路由时，`/console` 的根 HTML fallback 由浏览器入口按实际地址识别；另保留 Next.js 的 `console.html` 供其他静态托管使用。站内跨交易站/管理站使用完整页面导航，API 和 Cookie 仍保持同源。
+
+本次迁移相对于改动前仓库的 v2 后端保持全部 27 项前端接口的路径、方法、单位和请求语义。新前端可配合旧 v2 后端，旧前端也可继续配合原后端；未核实线上版本。数据库、密码、已有会话、实例签名与同步协议均无迁移，无需配套更新 AzurPilot 或 QQ 插件。回滚前端时恢复完整旧静态目录，不恢复数据库。当前本地完成状态及验证边界见 [前端设计与迁移说明](frontend/DESIGN.md)。
 
 ### 更新后端与恢复
 

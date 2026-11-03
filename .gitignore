@@ -6,6 +6,9 @@ bin/
 releases/
 frontend/node_modules/
 frontend/dist/
+frontend/.next/
+frontend/out/
+frontend/next-env.d.ts
 frontend/test-results/
 frontend/playwright-report/
 frontend/*.tsbuildinfo
