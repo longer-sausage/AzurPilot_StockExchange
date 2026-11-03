@@ -1,38 +1,27 @@
 @import "tailwindcss";
 @import "@cloudflare/kumo/styles/tailwind";
 @source '../node_modules/@cloudflare/kumo/dist';
-
-/* Refactoring UI §1.2 / §2.1 / §3.6：先以中性色区分内容层级。
-   主要内容：报价、资产、委托；次要：库存与成交；辅助：来源与时间。
-   唯一主操作为交易预览/弹窗确认。控件、焦点、浮层均交给 Kumo。
-   awesome-design-md/linear.app：克制的工作台、薄分隔、紧凑导航；
-   字号、颜色、圆角以 Kumo 语义令牌为准，不复制品牌色。 */
+/* 设计约束：市场列表是首页主要内容，交易仅在证券详情。
+   层级：证券名称/价格 > 涨跌与库存 > 代码/更新时间。
+   控件沿用 Kumo，布局只用 8/12/16/24/32px 间距。 */
 @layer base {
   :root {
     font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
-    --accent: var(--color-kumo-link);
-    --line: var(--color-kumo-line);
-    --muted: var(--color-kumo-subtle);
-    --up: var(--text-color-kumo-danger);
-    --down: var(--text-color-kumo-success);
-    --mmex-surface: var(--color-kumo-base);
-    --mmex-text: var(--text-color-kumo-default);
-    --mmex-muted: var(--text-color-kumo-subtle);
   }
   body {
     margin: 0;
-    background: var(--color-kumo-elevated);
+    background: var(--color-kumo-base);
     color: var(--text-color-kumo-default);
     font-size: 14px;
     line-height: 1.6;
   }
   h1 {
-    font-size: 28px;
+    font-size: 32px;
     font-weight: 600;
-    line-height: 1.25;
+    line-height: 1.2;
   }
   h2 {
-    font-size: 18px;
+    font-size: 20px;
     font-weight: 600;
     line-height: 1.4;
   }
@@ -40,1002 +29,395 @@
     font-size: 16px;
     font-weight: 600;
   }
-  p {
-    max-width: 70ch;
-  }
   small {
     font-size: 12px;
-    color: var(--text-color-kumo-subtle);
+  }
+  a {
+    color: inherit;
+    text-decoration: none;
   }
   strong,
   b {
     font-weight: 600;
   }
-  a {
-    color: var(--text-color-kumo-link);
-  }
   code {
     font-family: ui-monospace, monospace;
     font-size: 0.9em;
   }
-  label {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    min-width: 0;
-  }
-  label:has([role="checkbox"]) {
-    flex-direction: row;
-    align-items: center;
-  }
-  th,
-  td {
-    vertical-align: top;
-  }
-  td small {
-    display: block;
-    margin-top: 4px;
-  }
-  button,
-  input {
-    touch-action: manipulation;
-  }
 }
-@layer app {
-  .app-shell {
-    display: flex;
-    min-height: 100dvh;
-  }
-  .sidebar {
-    position: fixed;
-    inset: 0 auto 0 0;
-    width: 240px;
-    display: flex;
-    flex-direction: column;
-    padding: 24px 16px;
-    gap: 24px;
+@layer components {
+  .site-header {
+    border-bottom: 1px solid var(--color-kumo-line);
     background: var(--color-kumo-base);
-    border-right: 1px solid var(--line);
-    z-index: 10;
   }
-  .brand {
+  .header-inner,
+  .navigation,
+  .site-footer,
+  .page {
+    max-width: 1280px;
+    margin-inline: auto;
+  }
+  .header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 24px 32px;
+  }
+  .wordmark {
     display: flex;
     align-items: center;
     gap: 12px;
-    color: inherit;
-    text-decoration: none;
+    font-size: 20px;
+    font-weight: 600;
+    white-space: nowrap;
   }
-  .brand-mark {
-    display: grid;
-    place-items: center;
-    width: 40px;
-    height: 40px;
-    border-radius: 8px;
-    background: var(--color-kumo-tint);
-  }
-  .brand strong,
-  .brand small {
-    display: block;
-  }
-  .brand strong {
+  .wordmark-secondary {
+    margin-left: 8px;
     font-size: 14px;
-  }
-  .brand small {
-    margin-top: 4px;
-    font-size: 10px;
-  }
-  .nav-label,
-  .tiny-label,
-  .eyebrow {
-    color: var(--text-color-kumo-subtle);
-    font-size: 12px;
-  }
-  .nav-label {
-    padding: 0 12px;
-  }
-  .sidebar nav {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .sidebar nav button {
-    width: 100%;
-    justify-content: flex-start;
-  }
-  .sidebar nav button svg:last-child {
-    margin-left: auto;
-  }
-  .sidebar nav button:not(.active) svg:last-child {
-    visibility: hidden;
-  }
-  .sidebar-bottom {
-    margin-top: auto;
-    display: grid;
-    gap: 24px;
-  }
-  .join-note {
-    display: grid;
-    gap: 12px;
-    padding: 16px;
-    background: var(--color-kumo-elevated);
-    border-radius: 8px;
-  }
-  .join-note p {
-    font-size: 12px;
-  }
-  .join-note a,
-  .admin-link {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12px;
-  }
-  .sidebar-bottom > small {
-    font-size: 12px;
-  }
-  .workspace {
-    min-width: 0;
-    width: calc(100% - 240px);
-    margin-left: 240px;
-  }
-  .topbar {
-    min-height: 72px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 16px 32px;
-    background: var(--color-kumo-base);
-    border-bottom: 1px solid var(--line);
-  }
-  .breadcrumb {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    color: var(--text-color-kumo-subtle);
-  }
-  .breadcrumb b {
-    color: var(--text-color-kumo-default);
-  }
-  .top-actions {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 12px;
-  }
-  .connection {
-    font-size: 12px;
-    color: var(--text-color-kumo-subtle);
-  }
-  .avatar {
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
-    background: var(--color-kumo-tint);
-  }
-  .account-name {
-    max-width: 128px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .workspace main,
-  .admin-app main {
-    max-width: 1920px;
-    margin: auto;
-    padding: 32px;
-  }
-  .page-heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 24px;
-    margin-bottom: 32px;
-  }
-  .page-heading h1 {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }
-  .page-heading p {
-    margin-top: 12px;
-    color: var(--text-color-kumo-subtle);
-  }
-  .eyebrow {
-    margin-bottom: 12px;
-  }
-  .date {
-    color: var(--text-color-kumo-subtle);
-    white-space: nowrap;
-  }
-  .live-label {
-    font-size: 12px;
     font-weight: 400;
     color: var(--text-color-kumo-subtle);
   }
-  .stats-grid {
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .navigation {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 0 32px;
+  }
+  .connection-label,
+  .caption {
+    font-size: 12px;
+    color: var(--text-color-kumo-subtle);
+  }
+  .page {
+    padding: 40px 32px 64px;
+    display: grid;
+    gap: 32px;
+    min-height: 65dvh;
+    align-content: start;
+  }
+  .page-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 24px;
+  }
+  .page-heading p {
+    margin-top: 12px;
+    max-width: 65ch;
+    color: var(--text-color-kumo-subtle);
+  }
+  .eyebrow {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-color-kumo-subtle);
+    margin-bottom: 12px;
+  }
+  .overview {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 16px;
-    margin-bottom: 24px;
+    gap: 24px;
+    padding: 24px 0;
+    border-block: 1px solid var(--color-kumo-line);
   }
-  .stat {
-    padding: 24px;
+  .overview > div {
     display: grid;
-    gap: 12px;
+    gap: 8px;
   }
-  .stat > span {
+  .overview dt {
     color: var(--text-color-kumo-subtle);
   }
-  .stat > strong {
-    font-size: 28px;
+  .overview dd {
+    font-size: 24px;
+    font-weight: 500;
     font-variant-numeric: tabular-nums;
-    line-height: 1.25;
   }
-  .stat small:empty {
-    display: none;
-  }
-  .market-layout {
-    display: grid;
-    grid-template-columns: 288px minmax(0, 1fr) 304px;
-    gap: 24px;
-    align-items: start;
-  }
-  .market-layout > * {
-    min-width: 0;
-  }
-  .panel {
+  .data-card {
     min-width: 0;
     overflow: hidden;
   }
-  .panel-heading {
+  .card-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--color-kumo-line);
+  }
+  .card-heading h2 {
+    font-size: 16px;
+  }
+  .card-body {
+    padding: 24px;
+    display: grid;
+    gap: 24px;
+  }
+  .toolbar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 20px 24px;
-    border-bottom: 1px solid var(--line);
     flex-wrap: wrap;
   }
-  .panel-heading h2 {
+  .toolbar-group {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 14px;
-  }
-  .panel-heading > input {
-    max-width: 320px;
-  }
-  .padded {
-    padding: 24px;
-  }
-  .padded > h2 {
-    margin-bottom: 16px;
-  }
-  .padded > p {
-    margin-bottom: 24px;
-  }
-  .stock-list .search {
-    margin: 16px;
-  }
-  .search {
-    display: flex;
-    align-items: center;
-    flex-direction: row;
-    gap: 8px;
-  }
-  .list-tabs,
-  .admin-tabs,
-  .side-switch,
-  .account-tabs {
-    display: flex;
-    gap: 8px;
+    gap: 12px;
     flex-wrap: wrap;
   }
-  .list-tabs {
-    padding: 12px 16px;
+  .toolbar-search {
+    width: 280px;
+    max-width: 100%;
   }
-  .list-tabs button,
-  .side-switch button {
-    flex: 1;
-    justify-content: center;
-  }
-  .sort-select {
-    padding: 12px 16px;
-  }
-  .stock-filters {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 16px;
-    padding: 16px;
-    border-bottom: 1px solid var(--line);
-  }
-  .stock-filters > button {
-    grid-column: 1/-1;
-  }
-  .list-columns,
-  .stock-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.8fr);
-    align-items: center;
-    gap: 8px;
-  }
-  .list-columns {
-    padding: 12px 16px;
-    border-block: 1px solid var(--line);
-  }
-  .list-columns button {
-    padding: 0;
-    height: auto;
-    font-size: 12px;
-  }
-  .stock-rows {
-    max-height: 640px;
+  .table-region {
+    width: 100%;
     overflow: auto;
   }
-  .stock-row {
-    padding: 16px;
-    border-bottom: 1px solid var(--line);
-  }
-  .stock-row.selected {
-    background: var(--color-kumo-tint);
-  }
-  .stock-row > span:first-child {
-    min-width: 0;
-    display: grid;
-    gap: 8px;
-  }
-  .stock-row .security-name {
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    justify-content: flex-start;
-  }
-  .stock-row > span:last-child {
-    display: grid;
-    justify-items: end;
-    gap: 8px;
-  }
-  .stock-row > .text-button {
-    justify-self: end;
-    font-variant-numeric: tabular-nums;
-  }
-  .list-foot {
-    padding: 16px;
+  .data-note {
+    padding: 16px 24px;
+    border-top: 1px solid var(--color-kumo-line);
     font-size: 12px;
     color: var(--text-color-kumo-subtle);
   }
-  .quote-column {
-    min-width: 0;
-  }
-  .quote-panel {
-    padding: 24px;
-  }
-  .quote-top {
-    display: flex;
-    justify-content: space-between;
-    align-items: start;
-    gap: 16px;
-  }
-  .quote-top h2 {
-    margin-top: 8px;
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .quote-top > .tiny-label {
-    max-width: 160px;
-    text-align: right;
-  }
-  .quote-price {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding-block: 24px;
+  .numeric {
     font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
-  .quote-price > strong {
-    font-size: 36px;
-    line-height: 1.2;
-  }
-  .quote-price small {
-    display: block;
-    margin-top: 8px;
-  }
-  .quote-metrics {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px 24px;
-    padding-block: 20px;
-  }
-  .quote-metrics > div {
-    display: grid;
-    gap: 8px;
-  }
-  .quote-metrics span {
-    color: var(--text-color-kumo-subtle);
-    font-size: 12px;
-  }
-  .quote-metrics b {
-    font-size: 14px;
-    font-variant-numeric: tabular-nums;
-  }
-  .ticket > .form {
-    padding: 24px;
-  }
-  .form {
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
-  }
-  .form > p {
-    color: var(--text-color-kumo-subtle);
-  }
-  .trade-stock {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  .stock-avatar {
-    width: 40px;
-    height: 40px;
-    display: grid;
-    place-items: center;
-    background: var(--color-kumo-tint);
-    border-radius: 8px;
-  }
-  .trade-stock small {
-    display: block;
-  }
-  .ticket-estimate,
-  .ticket-info {
-    display: grid;
-    gap: 8px;
-    color: var(--text-color-kumo-subtle);
-    font-size: 12px;
-  }
-  .ticket-info {
-    grid-template-columns: 16px 1fr;
-    gap: 12px;
-  }
-  .wide {
-    width: 100%;
-    justify-content: center;
-  }
-  .table-scroll {
-    width: 100%;
-    overflow-x: auto;
-  }
-  .table-scroll table {
-    min-width: 640px;
-  }
-  .table-scroll td:not(:first-child),
-  .table-scroll th:not(:first-child) {
-    text-align: right;
-  }
-  .table-scroll button {
-    display: inline-flex;
-  }
-  .orders-panel {
-    margin-top: 24px;
-  }
-  .receipt {
-    margin-block: 24px;
-    display: grid;
-    gap: 16px;
-  }
-  .receipt > div {
-    display: flex;
-    justify-content: space-between;
-    gap: 24px;
-  }
-  .receipt dt {
-    color: var(--text-color-kumo-subtle);
-  }
-  .receipt dd {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-    overflow-wrap: anywhere;
-  }
-  .receipt .total {
-    padding-top: 16px;
-    border-top: 1px solid var(--line);
-    font-weight: 600;
-  }
-  .up {
+  .gain {
     color: var(--text-color-kumo-danger);
   }
-  .down {
+  .loss {
     color: var(--text-color-kumo-success);
   }
   .muted {
     color: var(--text-color-kumo-subtle);
   }
-  .account-strip {
-    display: flex;
-    gap: 24px;
-    flex-wrap: wrap;
-    padding: 16px 24px;
-    margin-bottom: 24px;
-    background: var(--color-kumo-base);
-    border-bottom: 1px solid var(--line);
-    font-size: 12px;
-  }
-  .account-strip b {
-    margin-left: 8px;
-  }
-  .ticker {
-    display: flex;
-    gap: 16px;
-    overflow-x: auto;
-    padding-bottom: 16px;
-    margin-bottom: 16px;
-  }
-  .ticker > button {
-    flex-shrink: 0;
-  }
-  .login-prompt,
-  .startup {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    flex-direction: column;
-    gap: 24px;
-    padding: 64px 24px;
-  }
-  .startup {
-    min-height: 100dvh;
-  }
-  .detail-layout {
+  .stack {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 320px;
     gap: 24px;
   }
-  .season-card {
-    display: grid;
-    gap: 12px;
-    padding: 16px;
-    background: var(--color-kumo-elevated);
-    border-radius: 8px;
-  }
-  .rank-podium,
-  .revenue-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 24px;
-    margin-block: 24px;
-  }
-  .rank-podium section,
-  .rank-podium .panel {
-    display: grid;
-    gap: 12px;
-  }
-  .revenue-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .rules-summary {
-    margin-bottom: 24px;
-  }
-  .rules-article {
-    padding: 32px;
-  }
-  .rules-article section {
-    display: flex;
-    align-items: start;
-    gap: 24px;
-    margin-bottom: 32px;
-  }
-  .rules-article p {
-    margin-top: 16px;
-    line-height: 1.9;
-    color: var(--text-color-kumo-subtle);
-  }
-  .section-number {
-    padding: 8px;
-    color: var(--text-color-kumo-subtle);
-  }
-  .rules-help {
-    padding-top: 24px;
-    border-top: 1px solid var(--line);
-  }
-  .admin-login {
-    min-height: 100dvh;
-    display: grid;
-    place-items: center;
-    padding: 24px;
-  }
-  .admin-login > .panel {
-    width: min(100%, 448px);
-    padding: 32px;
-  }
-  .admin-login h1 {
-    margin-block: 32px 12px;
-  }
-  .admin-login .form {
-    margin-top: 32px;
-  }
-  .admin-app main {
-    max-width: 1440px;
-  }
-  .admin-tabs {
-    margin-bottom: 24px;
-  }
-  .admin-fields,
-  .preset-grid,
-  .preset-tools {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 24px;
-  }
-  .preset-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    margin-block: 24px;
-  }
-  .preset-grid button {
-    width: 100%;
-    height: auto;
-    min-height: 128px;
-    align-items: start;
-    justify-content: start;
-    flex-direction: column;
-    white-space: normal;
-    padding: 16px;
-    gap: 12px;
-    text-align: left;
-  }
-  .preset-tools {
-    margin-bottom: 32px;
-    align-items: end;
-  }
-  .preset-tools > button {
-    width: 100%;
-    justify-content: center;
-  }
-  .settings-savebar {
-    position: sticky;
-    top: 0;
-    z-index: 5;
-    padding: 16px 24px;
-    background: var(--color-kumo-base);
-    border-bottom: 1px solid var(--line);
-    display: flex;
-    justify-content: space-between;
-    gap: 24px;
-    margin-bottom: 24px;
-  }
-  .settings-savebar p {
-    margin-top: 8px;
-    font-size: 12px;
-    color: var(--text-color-kumo-subtle);
-  }
-  .admin-app form > .panel + .panel {
-    margin-top: 24px;
-  }
-  .admin-search,
-  .pagination {
-    display: flex;
-    gap: 16px;
-    align-items: center;
-    flex-wrap: wrap;
-  }
-  .pagination {
-    padding: 16px 24px;
-    justify-content: end;
-  }
-  .exchange-dialog {
-    padding: 24px;
-    max-height: calc(100dvh - 64px);
-    overflow-y: auto;
-  }
-  .dialog-heading {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    margin-bottom: 24px;
-  }
-  .dialog-body {
+  .form-stack {
     display: grid;
     gap: 20px;
   }
-  .dialog-body > p {
-    color: var(--text-color-kumo-subtle);
-  }
-  .steps {
-    padding-left: 24px;
+  .fields {
     display: grid;
-    gap: 16px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
   }
-  .break-all {
-    overflow-wrap: anywhere;
-  }
-  footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 16px;
-    margin-top: 48px;
-    padding-top: 24px;
-    border-top: 1px solid var(--line);
-    color: var(--text-color-kumo-subtle);
-    font-size: 12px;
-  }
-  .financial-chart {
+  .fields-three {
     display: grid;
-    gap: 16px;
-    margin-top: 24px;
-  }
-  .financial-chart-top,
-  .financial-chart-actions,
-  .chart-periods,
-  .financial-chart-indicators,
-  .chart-navigation {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-  .financial-chart-top {
-    justify-content: space-between;
-  }
-  .financial-chart-actions label {
-    flex-direction: row;
-    align-items: center;
-  }
-  .financial-chart-actions input {
-    max-width: 160px;
-  }
-  .financial-chart-indicators label {
-    flex-direction: row;
-    align-items: center;
-    font-size: 12px;
-  }
-  .financial-canvas {
-    width: 100%;
-    height: 480px;
-    min-width: 0;
-    outline: none;
-  }
-  .financial-canvas-wrap {
-    position: relative;
-    min-width: 0;
-  }
-  .financial-chart-state {
-    position: absolute;
-    inset: 0;
-    display: grid;
-    place-items: center;
-    background: var(--color-kumo-base);
-  }
-  .chart-navigation {
-    justify-content: space-between;
-    font-size: 12px;
-    color: var(--text-color-kumo-subtle);
-  }
-  .chart-navigation > div {
-    display: flex;
-    gap: 8px;
-  }
-  .financial-chart-foot {
-    display: grid;
-    gap: 8px;
-    font-size: 12px;
-    color: var(--text-color-kumo-subtle);
-  }
-  .financial-fullscreen {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    overflow: auto;
-    padding: 24px;
-    background: var(--color-kumo-base);
-  }
-  .financial-fullscreen .financial-canvas {
-    height: calc(100dvh - 288px);
-  }
-  .financial-chart-help {
-    padding: 16px;
-    background: var(--color-kumo-elevated);
-  }
-  .learn-layout,
-  .learn-steps,
-  .glossary-grid {
-    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 24px;
   }
-  .learn-steps {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 352px;
+    gap: 24px;
+    align-items: start;
   }
-  .glossary-grid {
+  .two-columns {
+    display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+    align-items: start;
   }
-  .learn-step,
-  .glossary-item {
+  .price-display {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+  }
+  .price-display strong {
+    font-size: 40px;
+    line-height: 1.2;
+  }
+  .definition-list {
+    display: grid;
+    gap: 16px;
+  }
+  .definition-list > div {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 24px;
+  }
+  .definition-list dt {
+    color: var(--text-color-kumo-subtle);
+  }
+  .definition-list dd {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  .chart-content {
     padding: 24px;
+    display: grid;
+    gap: 20px;
   }
-}
-@media (max-width: 1440px) {
-  .market-layout {
-    grid-template-columns: 256px minmax(0, 1fr);
+  .chart-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
   }
-  .market-layout > .ticket {
-    grid-column: 1/-1;
+  .chart-metadata {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--text-color-kumo-subtle);
   }
-  .market-layout > .ticket > .form {
+  .dialog-content {
+    padding: 24px;
+    display: grid;
+    gap: 24px;
+    max-height: calc(100dvh - 80px);
+    overflow-y: auto;
+  }
+  .dialog-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+  }
+  .instructions {
+    list-style: decimal;
+    padding-left: 20px;
+    display: grid;
+    gap: 16px;
+  }
+  .inline-actions {
+    display: flex;
+    align-items: center;
+    justify-content: end;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .guide-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 24px;
   }
-  .ticket-estimate {
-    grid-column: 1/-1;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .prose {
+    max-width: 70ch;
+    display: grid;
+    gap: 16px;
+    line-height: 1.8;
   }
-  .preset-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .prose p {
+    color: var(--text-color-kumo-subtle);
+  }
+  .admin-login {
+    max-width: 440px;
+    width: 100%;
+    margin: 48px auto;
+  }
+  .save-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 20px 0;
+    border-top: 1px solid var(--color-kumo-line);
+  }
+  .site-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 24px 32px;
+    border-top: 1px solid var(--color-kumo-line);
+    font-size: 12px;
+    color: var(--text-color-kumo-subtle);
+  }
+  .site-footer > div {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 }
 @media (max-width: 1024px) {
-  .sidebar {
-    width: 208px;
-  }
-  .workspace {
-    width: calc(100% - 208px);
-    margin-left: 208px;
-  }
-  .workspace main,
-  .admin-app main {
-    padding: 24px;
-  }
-  .topbar {
-    padding: 16px 24px;
-  }
-  .connection,
-  .date {
-    display: none;
-  }
-  .stats-grid,
-  .admin-fields,
-  .preset-tools {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .market-layout,
-  .detail-layout {
+  .split {
     grid-template-columns: minmax(0, 1fr);
   }
-  .stock-rows {
-    max-height: 320px;
+  .connection-label {
+    display: none;
   }
-  .market-layout > .ticket > .form {
+  .guide-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 640px) {
-  .app-shell {
-    display: block;
+  .header-inner {
+    padding: 20px 16px;
+    gap: 12px;
+    flex-wrap: wrap;
   }
-  .sidebar {
-    position: sticky;
-    inset: 0 0 auto;
-    width: 100%;
-    padding: 12px;
-    border-right: 0;
-    border-bottom: 1px solid var(--line);
-  }
-  .sidebar > .brand,
-  .sidebar > .nav-label,
-  .sidebar > .season-card,
-  .sidebar-bottom {
+  .wordmark-secondary {
     display: none;
   }
-  .sidebar nav {
-    flex-direction: row;
-    gap: 8px;
-    overflow-x: auto;
+  .header-actions {
+    gap: 4px;
   }
-  .sidebar nav button {
-    flex-shrink: 0;
-    width: auto;
-    min-height: 40px;
-  }
-  .sidebar nav button svg:last-child {
+  .header-actions > span {
     display: none;
   }
-  .workspace {
-    width: 100%;
-    margin: 0;
+  .navigation {
+    padding: 0 16px;
   }
-  .topbar {
-    padding: 12px 16px;
-  }
-  .breadcrumb {
-    display: none;
-  }
-  .top-actions {
-    width: 100%;
-    justify-content: end;
-    gap: 8px;
-  }
-  .workspace main,
-  .admin-app main {
-    padding: 24px 16px;
+  .page {
+    padding: 24px 16px 40px;
+    gap: 24px;
   }
   .page-heading {
     align-items: start;
     flex-direction: column;
     gap: 16px;
   }
-  .page-heading h1 {
-    font-size: 24px;
-    gap: 12px;
+  h1 {
+    font-size: 28px;
   }
-  .stats-grid {
-    gap: 12px;
+  .overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
   }
-  .stat {
-    padding: 16px;
+  .overview dd {
+    font-size: 20px;
   }
-  .stat > strong {
-    font-size: 24px;
-    overflow-wrap: anywhere;
-  }
-  .quote-panel,
-  .ticket > .form,
-  .padded {
-    padding: 20px;
-  }
-  .quote-top {
-    flex-direction: column;
-  }
-  .quote-top > .tiny-label {
-    text-align: left;
-    max-width: none;
-  }
-  .market-layout > .ticket > .form {
-    display: flex;
-  }
-  .ticket-estimate {
-    grid-template-columns: 1fr;
-  }
-  .admin-fields,
-  .preset-grid,
-  .preset-tools,
-  .rank-podium,
-  .revenue-grid,
-  .learn-steps,
-  .glossary-grid {
+  .two-columns,
+  .fields,
+  .fields-three,
+  .guide-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .settings-savebar {
-    flex-direction: column;
-    gap: 16px;
-  }
-  .rules-article {
+  .card-body,
+  .chart-content {
     padding: 20px;
   }
-  .rules-article section {
+  .card-heading {
+    padding: 16px 20px;
+  }
+  .site-footer {
+    padding: 24px 16px;
+    align-items: start;
+    flex-direction: column;
     gap: 12px;
   }
-  .account-name {
-    max-width: 80px;
+  .price-display strong {
+    font-size: 32px;
   }
-  .receipt > div {
-    gap: 16px;
-  }
-  .financial-canvas {
-    height: 400px;
-  }
-  .chart-navigation > span {
-    display: none;
-  }
-  .financial-chart-actions {
-    width: 100%;
-  }
-  .financial-fullscreen {
-    padding: 16px;
+  .save-bar {
+    align-items: start;
+    flex-direction: column;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1044,111 +426,5 @@
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
-  }
-}
-
-.chart-date-toolbar,
-.indicator-toggles,
-.financial-chart-indicators,
-.indicator-legend {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-}
-.chart-date-toolbar label {
-  flex-direction: row;
-  align-items: center;
-}
-.indicator-legend span {
-  font-size: 12px;
-  display: flex;
-  gap: 8px;
-}
-.indicator-explanation {
-  display: grid;
-  gap: 16px;
-  padding: 16px;
-  background: var(--color-kumo-elevated);
-}
-
-@layer app {
-  .indicator-toolbar,
-  .indicator-toolbar > div {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .indicator-toolbar {
-    justify-content: space-between;
-  }
-  .list-tabs button,
-  .side-switch button,
-  .chart-periods button {
-    white-space: nowrap;
-  }
-  .stock-row {
-    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 0.8fr);
-  }
-  .stock-row small {
-    font-size: 10px;
-    white-space: nowrap;
-  }
-  .guide-layout {
-    display: grid;
-    grid-template-columns: 256px minmax(0, 1fr);
-    gap: 24px;
-  }
-  .guide-steps,
-  .guide-main {
-    padding: 24px;
-  }
-  .guide-steps {
-    display: grid;
-    gap: 12px;
-    align-content: start;
-  }
-  .guide-steps button {
-    width: 100%;
-    justify-content: start;
-  }
-  .guide-main {
-    display: grid;
-    gap: 24px;
-  }
-  .glossary {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
-  }
-  .glossary > [data-panel-open],
-  .glossary > div {
-    padding: 20px;
-  }
-  .glossary p {
-    margin-top: 16px;
-  }
-  .rules-list {
-    display: grid;
-    gap: 16px;
-  }
-  .rules-list > div {
-    display: flex;
-    justify-content: space-between;
-    gap: 24px;
-  }
-}
-@media (max-width: 640px) {
-  .guide-layout,
-  .glossary {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .list-tabs {
-    padding: 12px 8px;
-    gap: 4px;
-  }
-  .list-tabs button {
-    font-size: 12px;
   }
 }
