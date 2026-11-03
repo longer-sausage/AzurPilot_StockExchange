@@ -12,6 +12,8 @@ frontend/next-env.d.ts
 frontend/test-results/
 frontend/playwright-report/
 frontend/*.tsbuildinfo
+frontend/.wrangler/
+frontend/.dev.vars*
 .venv/
 __pycache__/
 *.db*

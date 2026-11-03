@@ -431,7 +431,9 @@ export function MarketPage() {
                       </Table.Cell>
                       <Table.Cell className="text-right numeric">
                         <div className="grid justify-items-end gap-1">
-                          <span>{money(s.price)}</span>
+                          <span className="font-semibold">
+                            {money(s.price)}
+                          </span>
                           <StockSparkline stock={s} />
                         </div>
                       </Table.Cell>

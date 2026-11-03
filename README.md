@@ -4,7 +4,7 @@
 
 ## 账户与三个组件
 
-- **交易所**：本仓库 Go 后端、Next.js / React 交易站和 `/console` 管理控制台。前端使用 Cloudflare Kumo、Tailwind CSS 4、Phosphor Icons 和 ECharts，静态导出后由既有 Go 进程提供。交易账本使用外部 PostgreSQL。
+- **交易所**：本仓库 Go 后端、Next.js / React 交易站和 `/console` 管理控制台。前端使用 Cloudflare Kumo、Tailwind CSS 4、Phosphor Icons 和 ECharts，静态导出后由 Cloudflare Workers Static Assets 提供；同源 API 使用无脚本路由直接回源至既有 Go 服务，不执行 Worker。也保留直接由 Go 提供静态文件的部署方式。交易账本使用外部 PostgreSQL。
 - **AzurPilot**：相邻仓库仅提供实例股票注册、绑定状态与行动力增量上报，不再嵌入交易终端、不代理玩家登录或交易。
 - **AstrBot**：`astrbot_plugin_mingmiao_stock` 插件仅支持官方 QQ 机器人。只修改插件目录，不需要修改 AstrBot 核心、全局配置或操作其 Docker。
 
@@ -58,7 +58,7 @@
 
 Go 版本以 `go.mod`、Node 依赖以 `frontend/package.json` 为准。
 
-前端要求 Node.js 22 及以上。Next.js 仅导出一个业务首页，前端是 React 单页应用（SPA）。市场、详情、资产、委托、月赛、指南和管理界面通过 React 状态切换，地址栏始终保持 `/`；`history.state` 保存当前视图，支持刷新和浏览器前进、后退。构建产物复制至既有 `frontend/dist/`，无需 Node.js 生产服务，也无需为页面配置 Worker 路由。设计约束与所用 Skill 见 [frontend/DESIGN.md](frontend/DESIGN.md)。
+前端要求 Node.js 22 及以上。Next.js 仅导出一个业务首页，前端是 React 单页应用（SPA）。市场、详情、持仓、委托、月赛、指南和管理界面通过 React 状态切换，地址栏始终保持 `/`；`history.state` 保存当前视图，支持刷新和浏览器前进、后退。构建产物复制至既有 `frontend/dist/`，无需 Node.js 生产服务；Cloudflare 使用一个整站 Worker Route，无需逐页配置路由。设计约束与所用 Skill 见 [frontend/DESIGN.md](frontend/DESIGN.md)。
 
 ```powershell
 go test ./...
@@ -84,7 +84,7 @@ npm exec --prefix frontend -- playwright install chromium
 npm run test:ui --prefix frontend
 ```
 
-该组用例覆盖布局、控件、登录、交易请求及管理交互，不能代替真实 PostgreSQL 账本验证。连接本地 Go 开发服务时使用 `npm run dev --prefix frontend`，Next.js 开发代理默认转发至 `127.0.0.1:8888`，可用 `EXCHANGE_API_PORT` 调整；生产静态导出没有代理配置。
+该组用例覆盖布局、控件、登录、交易请求及管理交互，不能代替真实 PostgreSQL 账本验证。连接本地 Go 开发服务时使用 `npm run dev --prefix frontend`，Next.js 开发代理默认转发至 `127.0.0.1:8888`，可用 `EXCHANGE_API_PORT` 调整；生产 API 通过 Cloudflare 无脚本路由直接回源，静态导出本身不运行 Next.js 服务。
 
 真实 PostgreSQL 测试使用专用隔离数据库，绝不能填生产库。浏览器测试要求本机回环 PostgreSQL，测试会创建模拟账户与股票：
 
@@ -95,7 +95,45 @@ npm run test:e2e --prefix frontend
 
 先执行前端构建。E2E 从当前 Go 源码启动独立后端，默认 `127.0.0.1:18889`，并在 `127.0.0.1:5178` 提供当前 `frontend/dist/` 和同源 API 代理。不使用旧 `bin/` 程序，不连接生产服务。假数据夹具只在显式运行 `preview:demo` 或 `test:ui` 时启用，正式前端没有 Mock 模式。
 
-## Docker Compose 部署
+## Cloudflare 静态前端与 API 直接回源
+
+生产发布使用 **GitHub `wess09/AzurPilot_StockExchange` 的 `main` 分支 → Cloudflare Workers Builds → `azurpilot-stockexchange`**。CF 已绑定这个仓库和分支并开启自动构建；本地只进行修改、构建和验证，生产静态文件以仓库触发的构建为准，不通过本地 Wrangler 或 API 直传替代这条链路。构建设置如下，根目录是仓库内相对路径 `frontend`，不填 `/frontend`。
+
+| 设置 | 值 |
+| --- | --- |
+| 根目录 | `frontend` |
+| 构建命令 | `npm run build` |
+| 部署命令 | `npx wrangler deploy` |
+| Node.js | 22 或更新版本 |
+
+配置文件为 `frontend/wrangler.jsonc`，静态目录为 `frontend/dist/`。Wrangler 由 Workers Builds 使用平台配置的部署凭据执行，上传整个静态目录，并配置 `stock.azurpilot.com/*` Route；配置不含 `main`、运行时绑定或 API 转发代码。无需本地 Docker、Go 镜像或数据库。已有部署命令附带 `--assets ./dist --compatibility-date 2026-11-03 --name azurpilot-stockexchange` 也可读取同一仓库配置。
+
+正式域名的 DNS 继续指向现有 Go 源站、保持 Cloudflare 代理开启。在 Zone 的 Worker Routes 中保留以下规则；更具体的无脚本规则优先于整站静态路由：
+
+| Route | Worker |
+| --- | --- |
+| `stock.azurpilot.com/api*` | 无（`script: null`） |
+| `stock.azurpilot.com/healthz*` | 无（`script: null`） |
+| `stock.azurpilot.com/*` | `azurpilot-stockexchange`，仅 Static Assets |
+
+前两条规则在 Cloudflare Zone 层管理，末尾通配符同时覆盖查询参数。Wrangler 只发布最后一条属于本应用的规则，不会删除无脚本规则。无脚本 Route 的匹配行为见 [Cloudflare 路由文档](https://developers.cloudflare.com/workers/configuration/routing/routes/#matching-behavior)。不能把本站改为同域 Custom Domain，否则无法沿用这组源站绕过规则。
+
+页面与 `/_next/*` 资源直接由 Static Assets 提供，旧 `/console` 导航使用 SPA fallback。API 与 SSE 直接走 Cloudflare 常规代理到原有 nginx / Go，不调用 Worker，不改写 Origin、Cookie、请求体或认证。身份、来源校验、缓存和 SSE 仍由原服务负责；不需要 CORS 或跨域会话。`workers.dev` 仅预览静态文件，不提供本站 API，完整功能使用正式域名。
+
+按 [Cloudflare 静态资源计费说明](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/)，不执行 Worker 脚本的静态请求免费且不限量；API 的无脚本 Route 也不会消耗 Worker 调用额度。本配置不启用 Workers Caching。构建、存储及账户其他功能仍按平台自身规则处理。
+
+构建后检查与只读线上验收：
+
+```powershell
+npm run check:worker --prefix frontend
+npm run test:edge --prefix frontend
+```
+
+`check:worker` 只做 Wrangler dry-run，不发布。`test:edge` 仅执行公开/未认证读取，检查正式域名的静态资源、SPA 导航 fallback、API、ETag/304、Origin 与 SSE，不在生产创建账户或交易。仅本地假数据 Playwright 用例覆盖登录与交互。
+
+本次配置相对于改动前仓库的 v2 后端不改变接口路径、方法、价格/时间单位与业务语义；新前端可配合原 v2 后端，原交易站、管理站与 AzurPilot 同步端也可继续使用原接口。Go 代码未变，不涉及新后端与旧客户端的契约变化。数据库、旧数据、实例签名、密码和会话无迁移；正式域名不变、Cookie 不重写，已有会话不因静态站切换被主动撤销。先配置无脚本 API 路由，再发布纯静态站；后续部署保留这两条绕过规则。回滚只需恢复完整旧静态版本，并保留 API 直接回源规则，不恢复数据库。
+
+## Docker Compose 后端部署
 
 仅提供 **一个纯 Go 后端服务**，不启动/管理 PostgreSQL、nginx、证书或前端构建容器。后端同时读取挂载的 `frontend/dist/` 静态文件。旧一键部署和 release 脚本已移除。
 

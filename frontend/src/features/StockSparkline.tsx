@@ -1,6 +1,6 @@
 "use client";
 // 行内价格为主要内容，真实分钟走势为辅助内容；沿用 Kumo Chart 和主题色板。
-// 只绘制服务端已有采样，不追加报价端点、不平滑、不补造空档。
+// 只连接真实报价，不插值、不平滑；超过 15 分钟的长空档保持断开。
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Chart, type KumoChartOption } from "@cloudflare/kumo";
 import * as echarts from "echarts/core";
@@ -16,6 +16,7 @@ import { chartColors } from "../core/chartColors";
 echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 const cache = new Map<number, { key: string; data: QuoteChart }>();
 const pending = new Map<string, Promise<QuoteChart>>();
+const gapThreshold = 15 * 60000;
 function load(id: number, key: string, from: number) {
   if (cache.get(id)?.key === key) return Promise.resolve(cache.get(id)!.data);
   const existing = pending.get(key);
@@ -77,8 +78,8 @@ export function StockSparkline({ stock }: { stock: Stock }) {
       points
         ?.filter(
           (p, i) =>
-            (i === 0 || p.t - points[i - 1].t > 60000) &&
-            (i === points.length - 1 || points[i + 1].t - p.t > 60000),
+            (i === 0 || p.t - points[i - 1].t > gapThreshold) &&
+            (i === points.length - 1 || points[i + 1].t - p.t > gapThreshold),
         )
         .map((p) => p.t),
     );
@@ -103,18 +104,21 @@ export function StockSparkline({ stock }: { stock: Stock }) {
         {
           type: "line",
           smooth: false,
+          connectNulls: false,
           showSymbol: true,
+          symbol: "circle",
           symbolSize: (value: unknown) =>
-            isolated.has((value as [number, number])[0]) ? 4 : 0,
+            isolated.has((value as [number, number])[0]) ? 2.5 : 0,
           lineStyle: {
-            width: 1.5,
+            width: 2,
             color,
           },
           itemStyle: { color },
-          // null 仅用于断开缺失分钟，不代表报价，不跨空档连出虚假的直线。
+          // 上报并非每分钟一次，普通稀疏采样直接连线；长空档才用 null 断开。
+          // null 不是报价，也不生成缺失分钟的数据。
           data:
             points?.flatMap((p, i) =>
-              i > 0 && p.t - points[i - 1].t > 60000
+              i > 0 && p.t - points[i - 1].t > gapThreshold
                 ? [
                     [points[i - 1].t + 60000, null],
                     [p.t, p.c],

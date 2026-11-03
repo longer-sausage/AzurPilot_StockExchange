@@ -93,7 +93,54 @@ test("走势使用历史报价，端点相同但中段变化也会刷新曲线�
   });
 });
 
-test("无历史、单点、缺口和请求失败不补造走势，重试不会进入详情", async ({
+test("真实上报间隔为几分钟时仍显示折线，不变成一串圆点", async ({ page }) => {
+  await page.route("**/api/v2/public/stocks/1/chart?*", async (route) => {
+    const from = Number(
+      new URL(route.request().url()).searchParams.get("from"),
+    );
+    await route.fulfill({
+      json: {
+        stockId: 1,
+        interval: 1,
+        points: [
+          { t: from + 34200000, o: 10000, h: 10000, l: 10000, c: 10000, n: 1 },
+          { t: from + 34380000, o: 12000, h: 12000, l: 12000, c: 12000, n: 1 },
+        ],
+      },
+    });
+  });
+  await page.goto("/");
+  const canvas = page
+    .getByRole("img", {
+      name: /海风研究所.*共 2 个采样/,
+    })
+    .locator("canvas");
+  await expect(canvas).toBeVisible();
+  await expect
+    .poll(() =>
+      canvas.evaluate((el: HTMLCanvasElement) => {
+        const { data } = el
+          .getContext("2d")!
+          .getImageData(0, 0, el.width, el.height);
+        let colored = 0;
+        for (let y = 0; y < el.height; y++)
+          for (let x = Math.floor(el.width / 3); x < (el.width * 2) / 3; x++) {
+            const i = (y * el.width + x) * 4;
+            if (
+              data[i + 3] > 0 &&
+              Math.max(data[i], data[i + 1], data[i + 2]) -
+                Math.min(data[i], data[i + 1], data[i + 2]) >
+                50
+            )
+              colored++;
+          }
+        return colored;
+      }),
+    )
+    .toBeGreaterThan(30);
+});
+
+test("无历史、单点、长缺口和请求失败不补造走势，重试不会进入详情", async ({
   page,
 }) => {
   let failed = true;
@@ -122,7 +169,7 @@ test("无历史、单点、缺口和请求失败不补造走势，重试不会�
               ? [
                   { t, o: 10000, h: 10000, l: 10000, c: 10000, n: 1 },
                   {
-                    t: t + 300000,
+                    t: t + 20 * 60000,
                     o: 20000,
                     h: 20000,
                     l: 20000,
