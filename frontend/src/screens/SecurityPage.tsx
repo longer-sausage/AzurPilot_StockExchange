@@ -73,7 +73,7 @@ export function SecurityPage() {
   if (!stock)
     return (
       <Empty
-        title={x.market ? "这支证券暂时不可用" : "正在读取证券"}
+        title={x.market ? "这只股票暂时无法查看" : "正在加载股票行情..."}
         contents={
           <LinkButton
             href="/"
@@ -82,7 +82,7 @@ export function SecurityPage() {
               route.navigate("/");
             }}
           >
-            返回市场
+            返回行情市场
           </LinkButton>
         }
       />
@@ -100,7 +100,7 @@ export function SecurityPage() {
           className="-ml-3"
         >
           <ArrowLeftIcon size={16} />
-          全部证券
+          返回全部股票
         </LinkButton>
       </div>
       <div className="page-heading">
@@ -116,7 +116,7 @@ export function SecurityPage() {
               {move(delta(stock))}
             </span>
           </div>
-          <p className="caption mt-2">较上海当日开盘</p>
+          <p className="caption mt-2">较今日开盘价（上海时区）</p>
         </div>
       </div>
       <div className="split">
@@ -163,7 +163,7 @@ export function SecurityPage() {
                 {!!detail?.legacyOrders.length && (
                   <Banner
                     variant="secondary"
-                    description={`另保留 ${detail.legacyOrders.length} 条旧订单成交汇总，不能还原逐笔成交。`}
+                    description={`另包含 ${detail.legacyOrders.length} 条早期版本的成交汇总；因当时未单独留存逐笔记录，此处仅展示汇总数据。`}
                   />
                 )}
               </>
@@ -205,7 +205,12 @@ export function SecurityPage() {
                     ))}
                   </Table.Body>
                 </Table>
-                {!detail?.orders.length && <Empty title="暂无待成交委托" />}
+                {!detail?.orders.length && (
+                  <Empty
+                    title="暂无待成交委托"
+                    description="当前市场上暂无正在排队等待撮合的委托挂单。"
+                  />
+                )}
               </div>
             )}
             {tab === "info" && (
@@ -228,13 +233,13 @@ export function SecurityPage() {
                   ))}
                 </dl>
                 <p className="caption">
-                  签名用于确认来源，不证明游戏数据真实。原始历史不截断，空档不伪造报价。
+                  数据说明：实例签名仅用于验证上报来源，不作为游戏数据真实性背书；历史行情均真实记录不作截断，无上报时段亦不会虚构报价。
                 </p>
               </div>
             )}
           </LayerCard>
           <LayerCard className="card-body">
-            <h2>流动性与价格摘要</h2>
+            <h2>市场流动性与价格概览</h2>
             <div className="fields">
               <dl className="definition-list">
                 {[

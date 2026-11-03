@@ -3,7 +3,6 @@ import { useRoute } from "./core/router";
 import { Component, type ReactNode } from "react";
 import { Badge, Banner, Button, LinkButton, Tabs } from "@cloudflare/kumo";
 import {
-  CatIcon,
   MoonIcon,
   SunIcon,
   ArrowClockwiseIcon,
@@ -20,7 +19,7 @@ import { GuidePage } from "./screens/GuidePage";
 import { AdminPage } from "./screens/AdminPage";
 const links = [
   ["/", "证券市场"],
-  ["/portfolio", "我的资产"],
+  ["/portfolio", "我的持仓"],
   ["/orders", "委托记录"],
   ["/seasons", "月赛排名"],
   ["/guide", "交易指南"],
@@ -35,10 +34,10 @@ class Recovery extends Component<{ children: ReactNode }, { failed: boolean }> {
       <main className="page">
         <Banner
           variant="error"
-          title="页面暂时无法显示"
-          description="请刷新页面。已经确认的委托不会重复提交。"
+          title="页面遇到了一点问题"
+          description="别担心，已确认提交的委托不会重复发送。请刷新页面重试。"
         />
-        <Button onClick={() => location.reload()}>重新加载</Button>
+        <Button onClick={() => location.reload()}>刷新页面</Button>
       </main>
     ) : (
       this.props.children
@@ -55,7 +54,7 @@ function Workspace() {
   const titles: Record<string, string> = {
     "/": "证券市场",
     "/security": "证券详情",
-    "/portfolio": "我的资产",
+    "/portfolio": "我的持仓",
     "/orders": "委托记录",
     "/seasons": "月赛排名",
     "/guide": "交易指南",
@@ -73,7 +72,13 @@ function Workspace() {
               route.navigate("/");
             }}
           >
-            <CatIcon size={30} />
+            <img
+              src="/favicon.webp"
+              alt="茗喵"
+              width={30}
+              height={30}
+              className="wordmark-icon"
+            />
             <span>
               茗喵<span className="wordmark-secondary">证券交易所</span>
             </span>
@@ -157,7 +162,7 @@ function Workspace() {
               }))}
             />
             <span className="connection-label">
-              {x.connected ? "行情实时连接" : "行情重新连接中"}
+              {x.connected ? "行情已实时连接" : "网络波动，行情重连中..."}
             </span>
           </div>
         )}
@@ -169,9 +174,9 @@ function Workspace() {
         {x.error && (
           <Banner
             variant="error"
-            title="行情暂时未更新"
+            title="行情数据未能及时同步"
             description={x.error}
-            action={<Button onClick={() => void x.refresh()}>重试</Button>}
+            action={<Button onClick={() => void x.refresh()}>点击重试</Button>}
           />
         )}
         <Recovery>

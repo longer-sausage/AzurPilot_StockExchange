@@ -25,7 +25,7 @@ export function SeasonsPage() {
         <div>
           <p className="eyebrow">月赛</p>
           <h1>月赛排名</h1>
-          <p>以净资产排名，收益率按个人实际赛季起始本金计算。</p>
+          <p>排行榜按每位参赛者的净资产从高到低排序，收益率以本赛季你的实际起始本金为基准计算。</p>
         </div>
         <Select
           label="赛季"
@@ -109,7 +109,7 @@ export function SeasonsPage() {
         {!ranks.length && (
           <Empty
             title="本赛季还没有排名"
-            description="完成账户设置后加入月赛。"
+            description="完成开户并成功绑定实例股票后，你的战绩就会自动计入月赛排行榜。"
           />
         )}
       </LayerCard>

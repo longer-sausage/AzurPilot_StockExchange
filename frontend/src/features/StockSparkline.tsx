@@ -2,20 +2,16 @@
 // 行内价格为主要内容，真实分钟走势为辅助内容；沿用 Kumo Chart 和主题色板。
 // 只绘制服务端已有采样，不追加报价端点、不平滑、不补造空档。
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Button,
-  Chart,
-  ChartPalette,
-  type KumoChartOption,
-} from "@cloudflare/kumo";
+import { Button, Chart, type KumoChartOption } from "@cloudflare/kumo";
 import * as echarts from "echarts/core";
 import { LineChart } from "echarts/charts";
 import { GridComponent, TooltipComponent } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import type { QuoteChart, Stock } from "../core/contracts";
 import { useExchange } from "../core/Exchange";
-import { date, money } from "../core/format";
+import { date, delta, money } from "../core/format";
 import { request } from "../core/http";
+import { chartColors } from "../core/chartColors";
 
 echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer]);
 const cache = new Map<number, { key: string; data: QuoteChart }>();
@@ -37,6 +33,8 @@ function load(id: number, key: string, from: number) {
 }
 export function StockSparkline({ stock }: { stock: Stock }) {
   const { theme } = useExchange();
+  const change = delta(stock);
+  const color = chartColors(theme).direction(change);
   const host = useRef<HTMLDivElement>(null);
   const from =
     Math.floor((stock.observedAt + 28800000) / 86400000) * 86400000 - 28800000;
@@ -110,9 +108,9 @@ export function StockSparkline({ stock }: { stock: Stock }) {
             isolated.has((value as [number, number])[0]) ? 4 : 0,
           lineStyle: {
             width: 1.5,
-            color: ChartPalette.categorical(0, theme === "dark"),
+            color,
           },
-          itemStyle: { color: ChartPalette.categorical(0, theme === "dark") },
+          itemStyle: { color },
           // null 仅用于断开缺失分钟，不代表报价，不跨空档连出虚假的直线。
           data:
             points?.flatMap((p, i) =>
@@ -126,7 +124,7 @@ export function StockSparkline({ stock }: { stock: Stock }) {
         },
       ],
     };
-  }, [points, theme]);
+  }, [points, color]);
   return (
     <div
       ref={host}

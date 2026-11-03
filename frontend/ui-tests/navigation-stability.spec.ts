@@ -8,7 +8,7 @@ for (const width of [1280, 1440, 375]) {
     await page.goto("/");
     await expect(page.getByRole("table", { name: "证券行情" })).toBeVisible();
     for (const name of [
-      "我的资产",
+      "我的持仓",
       "委托记录",
       "月赛排名",
       "交易指南",
@@ -49,7 +49,10 @@ for (const width of [1280, 1440, 375]) {
             requestAnimationFrame(read);
           }),
       );
-      await page.getByRole("tab", { name, exact: true }).click();
+      await page
+        .locator(".navigation")
+        .getByRole("tab", { name, exact: true })
+        .click();
       await expect(
         page.getByRole("heading", { name, exact: true }),
       ).toBeVisible();

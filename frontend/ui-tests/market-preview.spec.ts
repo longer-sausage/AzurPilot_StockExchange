@@ -172,7 +172,12 @@ test("无历史、单点、缺口和请求失败不补造走势，重试不会�
       for (let y = 0; y < el.height; y++)
         for (let x = 0; x < el.width; x++) {
           const i = (y * el.width + x) * 4;
-          if (data[i + 3] > 0 && data[i + 2] > data[i] + 50) {
+          if (
+            data[i + 3] > 0 &&
+            Math.max(data[i], data[i + 1], data[i + 2]) -
+              Math.min(data[i], data[i + 1], data[i + 2]) >
+              50
+          ) {
             if (x > el.width / 3 && x < (el.width * 2) / 3) center++;
             else edges++;
           }

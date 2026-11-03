@@ -120,7 +120,10 @@ test("真实机器人开户、强制改密、准入与股票绑定", async ({ pa
   if (await binding.isVisible())
     await binding.getByRole("button", { name: "检查绑定状态" }).click();
   await expect(binding).not.toBeVisible();
-  await page.getByRole("tab", { name: "我的资产" }).click();
+  await page
+    .locator(".navigation")
+    .getByRole("tab", { name: "我的持仓" })
+    .click();
   await expect(page.getByRole("tab", { name: "当前持仓" })).toBeVisible();
   expect((await page.request.get("/api/v2/account")).ok()).toBe(true);
 });

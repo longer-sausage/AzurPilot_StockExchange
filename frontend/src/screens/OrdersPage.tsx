@@ -10,7 +10,7 @@ export function OrdersPage() {
         <div>
           <p className="eyebrow">交易活动</p>
           <h1>委托记录</h1>
-          <p>检查成交明细、未成交余量与费用，或撤销待成交委托。</p>
+          <p>查看订单成交明细、挂单排队进度与交易税费，可随时撤销尚未成交的挂单。</p>
         </div>
       </div>
       {ledger ? <OrderRecords orders={ledger.orders} /> : <AccountRequired />}

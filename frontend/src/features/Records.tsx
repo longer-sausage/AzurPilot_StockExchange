@@ -37,7 +37,7 @@ export function OrderRecords({
     try {
       await request(`/orders/${id}`, undefined, "DELETE");
       await x.refresh();
-      notice("委托已撤销");
+      notice("委托已成功撤单，冻结资金与额度已释放");
     } catch (e) {
       notice((e as Error).message, true);
     } finally {
@@ -152,7 +152,7 @@ export function OrderRecords({
       ) : (
         <Empty
           title="暂无对应委托"
-          description="委托提交后，成交与未成交余量会保留在这里。"
+          description="提交委托后，撮合成交记录与挂单排队状态都会显示在这里。"
         />
       )}
     </LayerCard>
@@ -201,7 +201,10 @@ export function TradeRecords({ trades }: { trades: Trade[] }) {
       </Table>
     </div>
   ) : (
-    <Empty title="暂无逐笔成交" description="这里仅展示实际发生的成交。" />
+    <Empty
+      title="暂无逐笔成交"
+      description="这里会按时间顺序记录每一笔真实撮合的成交明细。"
+    />
   );
 }
 export function FeeDetails({ fees }: { fees?: Fees }) {

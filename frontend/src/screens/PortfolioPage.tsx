@@ -145,7 +145,7 @@ export function AccountBook({
           ) : (
             <Empty
               title="还没有持仓"
-              description="从证券市场选择一支股票，完成你的第一笔模拟交易。"
+              description="去行情市场挑选感兴趣的股票，开启你的第一笔模拟交易吧。"
               contents={
                 <LinkButton
                   href="/"
@@ -155,7 +155,7 @@ export function AccountBook({
                   }}
                   variant="primary"
                 >
-                  浏览证券市场
+                  前往行情市场
                 </LinkButton>
               }
             />
@@ -174,7 +174,7 @@ export function AccountBook({
             {a.legacyMetrics && (
               <Banner
                 variant="alert"
-                description={`历史统计不完整。已实现盈亏从 ${date(a.metricsSince)} 起累计；旧借息和融资费用不能还原。`}
+                description={`由于早期历史数据统计调整，已实现盈亏从 ${date(a.metricsSince)} 起开始累计统计，此前的借券利息与融资费用暂无法追溯还原。`}
               />
             )}
             <dl className="definition-list">
@@ -197,8 +197,8 @@ export function AccountBook({
                 collateral: "空头保证金",
                 shortProceeds: "冻结卖空所得",
                 unsettled: "待交收现金",
-                financingAccrued: "未落账融资利息估算",
-                borrowAccrued: "未落账借券费估算",
+                financingAccrued: "预估未结融资利息",
+                borrowAccrued: "预估未结借券费",
               }).map(([k, label]) => (
                 <div key={k}>
                   <dt>{label}</dt>
@@ -226,7 +226,7 @@ export function AccountBook({
                   ))}
                 </dl>
               ) : (
-                <p className="muted">没有待交收现金。</p>
+                <p className="muted">暂无待交收资金，所有现金均已结算可用。</p>
               )}
             </LayerCard>
           </div>
@@ -242,8 +242,8 @@ export function PortfolioPage() {
       <div className="page-heading">
         <div>
           <p className="eyebrow">投资组合</p>
-          <h1>我的资产</h1>
-          <p>查看持仓、资金占用、损益与每一笔交收。</p>
+          <h1>我的持仓</h1>
+          <p>实时查看持仓明细、资金占用、盈亏状况与现金交收进度。</p>
         </div>
         {x.account && (
           <Button onClick={() => x.setBindingOpen(true)}>股票绑定</Button>

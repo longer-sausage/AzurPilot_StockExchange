@@ -55,7 +55,7 @@ export function AccountAccess() {
   }
   async function change() {
     if (password !== repeat) {
-      setError("两次新密码不一致");
+      setError("两次输入的新密码不一致，请重新确认");
       return;
     }
     setBusy(true);
@@ -63,7 +63,7 @@ export function AccountAccess() {
     try {
       await request("/auth/password", { currentPassword: current, password });
       await x.refresh();
-      notice("密码已更新");
+      notice("新密码已设置成功");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -95,7 +95,7 @@ export function AccountAccess() {
             </Button>
           </div>
           <Dialog.Description>
-            在 QQ 群向机器人发送“注册 &lt;用户名&gt;”获得账户。
+            还没有账号？在官方 QQ 群向机器人发送「注册 &lt;用户名&gt;」即可直接开户并获取初始密码。
           </Dialog.Description>
           <form
             className="form-stack"
@@ -120,7 +120,7 @@ export function AccountAccess() {
               required
             />
             <Checkbox
-              label="记住我（30 天）"
+              label="记住登录状态（30 天）"
               checked={remember}
               onCheckedChange={setRemember}
             />
@@ -140,7 +140,7 @@ export function AccountAccess() {
               href="https://qm.qq.com/q/93NWF3S362"
               target="_blank"
             >
-              加入 QQ 群 1126124220
+              加入官方交流群（1126124220）
             </LinkButton>
           </form>
         </Dialog>
@@ -149,7 +149,7 @@ export function AccountAccess() {
         <Dialog size="lg" className="dialog-content">
           <Dialog.Title>设置你的交易密码</Dialog.Title>
           <Dialog.Description>
-            初始密码和重置后的密码仅用于首次登录，请先设置自己的密码。
+            首次登录或密码刚刚被重置，为了账户安全，请先设置一个专属的新密码。
           </Dialog.Description>
           <form
             className="form-stack"
@@ -172,7 +172,7 @@ export function AccountAccess() {
               minLength={12}
               maxLength={72}
               autoComplete="new-password"
-              description="12–72 字节，包含大写、小写、数字和符号。"
+              description="密码长度 12–72 位，需同时包含大写字母、小写字母、数字和符号。"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
@@ -207,23 +207,23 @@ export function AccountAccess() {
         <Dialog size="lg" className="dialog-content">
           <Dialog.Title>关联你的实例股票</Dialog.Title>
           <Dialog.Description>
-            交易账户与 AzurPilot 股票一对一关联。
+            每个交易账户需要绑定一只专属的 AzurPilot 实例股票，绑定后即可解锁全部交易功能。
           </Dialog.Description>
           {x.account?.boundStockId ? (
             <>
               <Banner
                 variant="secondary"
-                description={`当前绑定：${x.market?.stocks.find((s) => s.id === x.account?.boundStockId)?.name ?? x.account.boundStockId}`}
+                description={`已成功绑定股票：${x.market?.stocks.find((s) => s.id === x.account?.boundStockId)?.name ?? x.account.boundStockId}`}
               />
-              <p>退出登录不会解除绑定。只有管理员删除股票后才能重新绑定。</p>
+              <p>绑定关系长期有效，退出登录不会自动解绑；如需更换绑定，请联系管理员处理。</p>
               <Button onClick={() => x.setBindingOpen(false)}>完成</Button>
             </>
           ) : (
             <>
               <ol className="instructions">
-                <li>在 AzurPilot 中注册实例股票。</li>
-                <li>复制该实例的股票绑定码。</li>
-                <li>在原 QQ 群发送“绑定股票 &lt;绑定码&gt;”。</li>
+                <li>前往你的 AzurPilot 实例后台完成股票注册；</li>
+                <li>在股票详情中复制系统生成的专属绑定码；</li>
+                <li>回到官方 QQ 群向机器人发送「绑定股票 &lt;绑定码&gt;」即可完成绑定。</li>
               </ol>
               <Button variant="primary" onClick={() => void x.refresh()}>
                 检查绑定状态
@@ -243,8 +243,8 @@ export function AccountRequired() {
   return (
     <Empty
       icon={<LockKeyIcon size={28} />}
-      title="你的交易空间"
-      description="登录并绑定实例股票后，查看资产、持仓和委托。"
+      title="请先登录交易账户"
+      description="登录并绑定属于你的 AzurPilot 股票后，即可查看资产净值、持仓明细与历史委托。"
       contents={
         <Button
           variant="primary"
@@ -252,7 +252,7 @@ export function AccountRequired() {
             x.account ? x.setBindingOpen(true) : x.setLoginOpen(true)
           }
         >
-          {x.account ? "完成账户设置" : "登录交易账户"}
+          {x.account ? "前往绑定股票" : "登录交易账户"}
         </Button>
       }
     />

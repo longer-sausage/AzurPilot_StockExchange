@@ -30,12 +30,15 @@ import {
   DataZoomComponent,
   GridComponent,
   LegendComponent,
+  MarkLineComponent,
   TooltipComponent,
+  VisualMapComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import type { Detail, Period } from "../core/contracts";
-import { date } from "../core/format";
+import { date, money } from "../core/format";
 import { useExchange } from "../core/Exchange";
+import { chartColors } from "../core/chartColors";
 echarts.use([
   BarChart,
   CandlestickChart,
@@ -44,9 +47,14 @@ echarts.use([
   DataZoomComponent,
   GridComponent,
   LegendComponent,
+  MarkLineComponent,
   TooltipComponent,
+  VisualMapComponent,
   CanvasRenderer,
 ]);
+const chartUpdates = {
+  replaceMerge: ["series", "visualMap", "xAxis", "yAxis", "grid"],
+};
 const periods = [
   { value: "time", label: "分时" },
   { value: "day", label: "日 K" },
@@ -104,13 +112,15 @@ export function PriceChart({
   loading: boolean;
 }) {
   const { theme } = useExchange(),
-    [indicators, setIndicators] = useState(["MA"]),
+    [indicators, setIndicators] = useState<string[]>([]),
     [sub, setSub] = useState("macd"),
     [full, setFull] = useState(false),
     [help, setHelp] = useState(false),
     chart = useRef<echarts.ECharts | null>(null),
     viewport = useRef({ start: 0, end: 100 });
   const options = useMemo<KumoChartOption>(() => {
+    const colors = chartColors(theme);
+    const baseline = (detail?.summary.open ?? 0) / 100;
     const bars = detail?.bars ?? [],
       prices = bars.map((b) => b.close / 100),
       times = bars.map((b) =>
@@ -133,7 +143,13 @@ export function PriceChart({
         connectNulls: false,
         xAxisIndex: axis,
         yAxisIndex: axis,
-        lineStyle: { width: 1.5 },
+        lineStyle: {
+          width: name === "分时价格" ? 2.5 : 1.5,
+          ...(name === "分时价格"
+            ? {}
+            : { color: colors.lines[name] ?? colors.flat }),
+        },
+        itemStyle: { color: colors.lines[name] ?? colors.flat },
         animation: false,
       });
     if (period === "time") {
@@ -159,10 +175,48 @@ export function PriceChart({
           b.high / 100,
         ]),
         itemStyle: {
-          color: "#d92d20",
-          color0: "#079455",
-          borderColor: "#d92d20",
-          borderColor0: "#079455",
+          color: colors.up,
+          color0: colors.down,
+          borderColor: colors.up,
+          borderColor0: colors.down,
+          borderColorDoji: colors.flat,
+        },
+      });
+    const last = bars.at(-1);
+    if (last)
+      Object.assign(series[0], {
+        markLine: {
+          silent: true,
+          symbol: "none",
+          label: { show: false },
+          data: [
+            ...(period === "time" && baseline > 0
+              ? [
+                  {
+                    yAxis: baseline,
+                    lineStyle: { color: colors.flat, type: "dashed", width: 1 },
+                  },
+                ]
+              : []),
+            {
+              yAxis: last.close / 100,
+              lineStyle: {
+                color: colors.direction(last.close, detail?.summary.open),
+                type: "dotted",
+                width: 1,
+                opacity: 0.6,
+              },
+              label: {
+                show: true,
+                position: "end",
+                formatter: money(last.close),
+                fontSize: 14,
+                fontWeight: 600,
+                color: colors.flat,
+                opacity: 1,
+              },
+            },
+          ],
         },
       });
     for (const kind of indicators) {
@@ -219,7 +273,11 @@ export function PriceChart({
       type: "bar",
       xAxisIndex: 1,
       yAxisIndex: 1,
-      data: bars.map((b) => b.volume),
+      itemStyle: { color: colors.flat },
+      data: bars.map((b) => ({
+        value: b.volume,
+        itemStyle: { color: colors.direction(b.close, b.open) },
+      })),
       barMaxWidth: 12,
     });
     const short = ema(prices, 12),
@@ -236,25 +294,52 @@ export function PriceChart({
         type: "bar",
         xAxisIndex: 2,
         yAxisIndex: 2,
-        data: dif.map((v, i) =>
-          v === null || dea[i] === null ? null : 2 * (v - dea[i]!),
-        ),
+        itemStyle: { color: colors.flat },
+        data: dif.map((v, i) => {
+          if (v === null || dea[i] === null) return null;
+          const value = 2 * (v - dea[i]!);
+          return { value, itemStyle: { color: colors.direction(value) } };
+        }),
       });
     }
     const grids =
       sub === "macd"
         ? [
-            { left: 64, right: 20, top: 36, height: "48%" },
-            { left: 64, right: 20, top: "64%", height: "10%" },
-            { left: 64, right: 20, top: "82%", height: "8%" },
+            { left: 72, right: 88, top: 36, height: "48%" },
+            { left: 72, right: 88, top: "64%", height: "10%" },
+            { left: 72, right: 88, top: "82%", height: "8%" },
           ]
         : [
-            { left: 64, right: 20, top: 36, height: "58%" },
-            { left: 64, right: 20, top: "76%", height: "12%" },
+            { left: 72, right: 88, top: 36, height: "58%" },
+            { left: 72, right: 88, top: "76%", height: "12%" },
           ];
     return {
       animation: false,
       backgroundColor: "transparent",
+      visualMap:
+        period === "time" && baseline > 0
+          ? [
+              {
+                type: "piecewise",
+                show: false,
+                seriesIndex: 0,
+                dimension: 1,
+                pieces: [
+                  {
+                    gte: Math.min(...prices, baseline) - 1,
+                    lt: baseline,
+                    color: colors.down,
+                  },
+                  { value: baseline, color: colors.flat },
+                  {
+                    gt: baseline,
+                    lte: Math.max(...prices, baseline) + 1,
+                    color: colors.up,
+                  },
+                ],
+              },
+            ]
+          : [],
       legend: { type: "scroll", top: 0, textStyle: { fontSize: 11 } },
       grid: grids,
       xAxis: grids.map((_, i) => ({
@@ -274,7 +359,12 @@ export function PriceChart({
         gridIndex: i,
         scale: i === 0,
         splitNumber: i === 0 ? 4 : 2,
-        axisLabel: { fontSize: 10 },
+        axisLabel: {
+          fontSize: i === 0 ? 12 : 10,
+          ...(i === 0
+            ? { formatter: (value: number) => money(Math.round(value * 100)) }
+            : {}),
+        },
         splitLine: { show: i === 0 },
         name: i === 1 ? "成交量" : i === 2 ? "MACD" : "价格",
       })),
@@ -320,7 +410,7 @@ export function PriceChart({
       ],
       series,
     };
-  }, [detail, period, indicators, sub]);
+  }, [detail, period, indicators, sub, theme]);
   function zoom(direction: "in" | "out" | "reset") {
     const current = chart.current;
     if (!current) return;
@@ -339,6 +429,31 @@ export function PriceChart({
   }
   const content = (
     <div className="chart-content">
+      <dl
+        className="flex flex-wrap items-end gap-x-6 gap-y-3"
+        aria-label="图表价格摘要"
+      >
+        <div>
+          <dt className="caption">图中末价</dt>
+          <dd className="text-2xl font-semibold tabular-nums">
+            {detail?.bars.length ? money(detail.bars.at(-1)!.close) : "—"}
+          </dd>
+        </div>
+        {(
+          [
+            ["开盘", detail?.summary.open],
+            ["最高", detail?.summary.high],
+            ["最低", detail?.summary.low],
+          ] as const
+        ).map(([label, value]) => (
+          <div key={label}>
+            <dt className="caption">{label}</dt>
+            <dd className="numeric">
+              {value === undefined ? "—" : money(value)}
+            </dd>
+          </div>
+        ))}
+      </dl>
       <div className="chart-toolbar">
         <Tabs
           value={period}
@@ -434,6 +549,7 @@ export function PriceChart({
             ref={chart}
             echarts={echarts}
             options={options}
+            optionUpdateBehavior={chartUpdates}
             isDarkMode={theme === "dark"}
             height={full ? Math.max(400, innerHeight - 300) : 440}
             onEvents={{
@@ -495,6 +611,12 @@ export function PriceChart({
         </div>
       )}
       <div className="chart-metadata">
+        <span>
+          {period === "time"
+            ? "分时红绿相对所选日开盘价"
+            : "K线与成交量：红涨绿跌"}{" "}
+          · MACD 红正绿负
+        </span>
         <span>
           {detail?.coverage.count ?? 0} 条月原始记录 ·{" "}
           {detail?.coverage.reconciledAt

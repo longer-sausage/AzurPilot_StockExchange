@@ -203,14 +203,14 @@ export function AdminPage() {
   );
   const total = Math.max(1, Math.ceil(people.length / 20)),
     current = Math.min(page, total);
-  if (checking) return <Empty title="正在检查管理员会话" />;
+  if (checking) return <Empty title="正在验证管理员身份..." />;
   if (!authenticated)
     return (
       <LayerCard className="admin-login card-body">
         <p className="eyebrow">交易所管理</p>
         <h1>管理员登录</h1>
         <p className="muted">
-          使用服务器配置的管理员密码。管理员与玩家会话相互独立。
+          请输入服务器配置的管理员管理密码。管理员权限与普通交易会话相互隔离。
         </p>
         <form
           className="form-stack"
@@ -228,7 +228,7 @@ export function AdminPage() {
             required
           />
           <Checkbox
-            label="记住我（30 天）"
+            label="记住登录状态（30 天）"
             checked={remember}
             onCheckedChange={setRemember}
           />
@@ -245,7 +245,7 @@ export function AdminPage() {
         <div>
           <p className="eyebrow">运营管理</p>
           <h1>交易所管理</h1>
-          <p>规则、账户与证券，统一由服务器验证和落账。</p>
+          <p>集中管理市场规则、交易账户与挂牌证券，所有操作均由服务端实时校验并安全落账。</p>
         </div>
         <div className="toolbar-group">
           <Button
@@ -266,7 +266,7 @@ export function AdminPage() {
               }, "")
             }
           >
-            退出管理
+            退出管理后台
           </Button>
         </div>
       </div>
@@ -412,7 +412,7 @@ export function AdminPage() {
                 </Table.Body>
               </Table>
             </div>
-            {!listed.length && <Empty title="没有匹配的证券" />}
+            {!listed.length && <Empty title="未找到符合条件的证券" />}
           </LayerCard>
         </>
       )}
@@ -503,7 +503,7 @@ export function AdminPage() {
                 </Table.Body>
               </Table>
             </div>
-            {!people.length && <Empty title="没有匹配的账户" />}
+            {!people.length && <Empty title="未找到符合条件的交易账户" />}
             <div className="card-heading">
               <span className="caption">
                 {people.length} 个账户 · 第 {current} / {total} 页
@@ -644,11 +644,11 @@ export function AdminPage() {
               </Dialog.Description>
               <Banner
                 variant="alert"
-                description="按最后报价结清多空持仓，撤销相关挂单并解除账户绑定。原实例将停止上报且不能重新注册。账本和原始历史保留。"
+                description="删除后，系统将按最后报价结清该股票的所有多空持仓、撤销未成交挂单，并解除与交易账户的绑定关系；原 AzurPilot 实例将永久停止上报且不可再次注册。历史账本记录将完整保留以供追溯。"
               />
               <Input
                 label="确认股票代码"
-                description={`输入 ${stockDelete.symbol} 以确认删除。`}
+                description={`为避免误操作，请输入股票代码「${stockDelete.symbol}」以确认删除。`}
                 value={confirmation}
                 onChange={(e) => setConfirmation(e.target.value)}
               />
@@ -759,7 +759,7 @@ export function AdminPage() {
                     inputMode="decimal"
                     value={adjustment}
                     onChange={(e) => setAdjustment(e.target.value)}
-                    description={`当前现金 ${money(accountEdit.cash)}；允许负数，保留赛季起始本金。余额变化时拒绝覆盖。`}
+                    description={`当前现金余额：${money(accountEdit.cash)}。输入正数增加、负数扣减（不会扣减赛季初始本金）；若保存时账户余额发生并发变动，系统将自动拦截以防覆盖。`}
                   />
                   <Checkbox
                     label="停用账户"
@@ -768,7 +768,7 @@ export function AdminPage() {
                   />
                   {disabled && !accountEdit.disabled && (
                     <Checkbox
-                      label="确认撤单、结清本人持仓并撤销会话"
+                      label="已知晓后果：撤销该账户所有活动委托、结清名下多空持仓并强制退出登录"
                       checked={confirmDisable}
                       onCheckedChange={setConfirmDisable}
                     />
@@ -805,11 +805,11 @@ export function AdminPage() {
               {temporary && (
                 <Banner
                   variant="alert"
-                  title="随机初始密码，仅当前显示"
+                  title="临时初始密码（仅当前显示一次，请妥善保存）"
                   description={
                     <>
                       <ClipboardText text={temporary} />
-                      <p>旧会话已撤销，下次登录强制改密。</p>
+                      <p>原登录会话已全部撤销，玩家下次登录时必须修改为自己的新密码。</p>
                     </>
                   }
                 />
@@ -830,7 +830,7 @@ export function AdminPage() {
         <Dialog className="dialog-content">
           <Dialog.Title>确认重置账户密码</Dialog.Title>
           <Dialog.Description>
-            旧密码与全部会话立即失效，服务器生成随机强密码，首次登录必须修改。
+            重置后原密码与所有在线登录会话将立即失效。系统会生成一个随机强密码，玩家首次登录时必须设置新密码。
           </Dialog.Description>
           <div className="inline-actions">
             <Button onClick={() => setResetOpen(false)} disabled={busy}>

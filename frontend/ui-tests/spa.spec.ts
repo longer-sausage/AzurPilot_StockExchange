@@ -160,7 +160,7 @@ test("图表、分钟K、指标、全屏与主题", async ({ page }) => {
   await page.goto("/#/security?stock=1");
   await expect(page.locator('[role="img"] canvas')).toBeVisible();
   await page.getByRole("tab", { name: "M5", exact: true }).click();
-  await page.getByRole("button", { name: "技术指标 (1)" }).click();
+  await page.getByRole("button", { name: "技术指标 (0)" }).click();
   await page.getByRole("checkbox", { name: "BOLL", exact: true }).check();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "全屏走势图" }).click();
@@ -183,7 +183,10 @@ test("图表、分钟K、指标、全屏与主题", async ({ page }) => {
 test("资产、费用、撤单和月赛", async ({ page }) => {
   await page.goto("/");
   await login(page);
-  await page.getByRole("tab", { name: "我的资产" }).click();
+  await page
+    .locator(".navigation")
+    .getByRole("tab", { name: "我的持仓" })
+    .click();
   await expect(page.getByRole("tab", { name: "当前持仓" })).toBeVisible();
   await page.getByRole("tab", { name: "资产与交收" }).click();
   await expect(page.getByRole("heading", { name: "身份识别码" })).toBeVisible();
@@ -273,7 +276,7 @@ test("各页面桌面和手机无文档横向溢出", async ({ page }) => {
     for (const [name, legacyView, title] of [
       ["market", "/", "证券市场"],
       ["security", "/security?stock=1", "海风研究所"],
-      ["portfolio", "/portfolio", "我的资产"],
+      ["portfolio", "/portfolio", "我的持仓"],
       ["orders", "/orders", "委托记录"],
       ["seasons", "/seasons", "月赛排名"],
       ["guide", "/guide", "交易指南"],

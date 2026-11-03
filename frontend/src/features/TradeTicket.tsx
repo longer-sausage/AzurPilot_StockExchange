@@ -50,15 +50,15 @@ export function TradeTicket({ stock }: { stock: Stock }) {
         : (rules?.quoteTTLSeconds ?? 86400),
     state = stockState(stock, ttl, x.now);
   const blocked = !x.connected
-    ? "行情连接中断，恢复连接后再交易。"
+    ? "行情连接已断开，请等待网络重连后再交易。"
     : !x.market?.open
-      ? x.market?.reason || "当前市场休市。"
+      ? x.market?.reason || "当前市场休市中，暂时停止交易。"
       : state !== "可交易"
-        ? `该证券${state}。`
+        ? `这只股票当前${state}，暂时无法下单。`
         : x.account?.boundStockId === stock.id
-          ? "不能交易自己绑定的股票。"
+          ? "根据市场规则，你不能交易自己绑定的专属股票。"
           : side === "short" && !stock.bound
-            ? "该股票尚未绑定账户，不能卖空。"
+            ? "该股票尚未绑定实例账户，暂不开放卖空。"
             : "";
   async function prepare() {
     if (!x.account) {
@@ -74,7 +74,7 @@ export function TradeTicket({ stock }: { stock: Stock }) {
     try {
       const count = Number(amount);
       if (!Number.isSafeInteger(count) || count <= 0 || count % lot)
-        throw Error(`数量必须为 ${lot} 股的正整数倍`);
+        throw Error(`委托股数必须为 ${lot} 股（每手股数）的正整数倍`);
       const result = await request<Preview>("/orders/preview", {
         stock: String(stock.id),
         side,
@@ -105,10 +105,10 @@ export function TradeTicket({ stock }: { stock: Stock }) {
       setPreview(undefined);
       notice(
         result.order.status === "rejected"
-          ? `委托未通过：${result.order.reason ?? ""}`
+          ? `委托提交失败：${result.order.reason ?? "请核对后重试"}`
           : result.order.filled
-            ? `委托 #${result.order.id} 成交 ${quantity(result.order.filled)} 股，均价 ${money(result.order.averagePrice)}`
-            : `委托 #${result.order.id} 已挂单`,
+            ? `委托 #${result.order.id} 已成功成交 ${quantity(result.order.filled)} 股，均价 ${money(result.order.averagePrice)}`
+            : `委托 #${result.order.id} 已挂单，排队等待撮合中`,
         result.order.status === "rejected",
       );
       await x.refresh();
@@ -123,7 +123,7 @@ export function TradeTicket({ stock }: { stock: Stock }) {
     <>
       <LayerCard className="data-card">
         <div className="card-heading">
-          <h2>提交委托</h2>
+          <h2>交易下单</h2>
           <span className="caption">{stock.symbol}</span>
         </div>
         <form
@@ -166,7 +166,7 @@ export function TradeTicket({ stock }: { stock: Stock }) {
             value={amount}
             onChange={(e) => setAmount(e.target.value)}
             required
-            description={`每手 ${lot} 股；可卖 ${quantity(position?.sellable ?? 0)}，可回补 ${quantity(position?.shortQuantity ?? 0)}`}
+            description={`每手 ${lot} 股；当前可用持仓可卖 ${quantity(position?.sellable ?? 0)} 股，空头可回补 ${quantity(position?.shortQuantity ?? 0)} 股`}
           />
           <div className="toolbar-group">
             {[1, 5, 10].map((n) => (
@@ -186,13 +186,13 @@ export function TradeTicket({ stock }: { stock: Stock }) {
             onChange={(e) => setPrice(e.target.value)}
             disabled={kind === "market"}
             required
-            description="模拟币 / 股，最多两位小数。"
+            description="单位：模拟币 / 股，最多支持两位小数。"
           />
           <Button
             variant="ghost"
             onClick={() => setPrice((stock.price / 100).toFixed(2))}
           >
-            使用最新价 {money(stock.price)}
+            填入最新成交价 {money(stock.price)}
           </Button>
           {(side === "buy" || side === "short") && (
             <Select<number>
@@ -220,12 +220,12 @@ export function TradeTicket({ stock }: { stock: Stock }) {
           {(leverage > 1 || side === "short" || kind === "stop") && (
             <Banner
               variant="alert"
-              description="杠杆放大损益；借款与借券费用持续计提。止损触发后按市价执行，可能跳空。"
+              description="杠杆交易会同步放大收益与亏损，持仓期间会持续计收融资借款利息或借券费用；设置止损时，触发后将转为市价单撮合，遇到行情剧烈波动时成交价可能会有跳空偏差。"
             />
           )}
           {blocked && <Banner variant="secondary" description={blocked} />}
           <p className="caption">
-            额度内即时成交，余量挂单并在后续整点处理。金额、税费与保证金以服务器预览为准。
+            在每小时流动性额度内可立即撮合成交，超出部分会自动挂单并在整点撮合；预估税费与保证金扣减以下一步预览明细为准。
           </p>
           {error && !preview && (
             <Banner variant="error" role="alert" description={error} />
@@ -297,8 +297,8 @@ export function TradeTicket({ stock }: { stock: Stock }) {
                 ))}
               </dl>
               <p className="caption">
-                有效至 {date(preview.expiresAt)}
-                。实际成交前会重新核验报价和资产，同一预览重复确认不会重复落账。
+                此预览明细有效至 {date(preview.expiresAt)}
+                。提交时系统会再次核验最新股价与账户资产；请放心，重复点击确认不会导致重复扣款或重复下单。
               </p>
               {error && (
                 <Banner variant="error" role="alert" description={error} />

@@ -11,6 +11,7 @@ const mime = {
   ".woff2": "font/woff2",
   ".txt": "text/plain; charset=utf-8",
   ".ico": "image/x-icon",
+  ".webp": "image/webp",
 };
 // 与 Go 当前静态路由相同，/console 对应根 HTML fallback。
 export async function serveStatic(req, res) {

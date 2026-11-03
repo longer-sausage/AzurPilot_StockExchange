@@ -184,17 +184,24 @@ export function makeDemo() {
   const chartBars = (stock, day) => {
     const start = new Date(day + "T09:30:00+08:00").getTime();
     return Array.from({ length: 180 }, (_, i) => {
-      const open = Math.round(
-        stock.open +
-          ((stock.price - stock.open) * i) / 180 +
-          Math.sin(i * (0.08 + stock.id * 0.013) + stock.id) * 600,
-      );
+      const open =
+        i === 0
+          ? stock.open
+          : Math.round(
+              stock.open +
+                ((stock.price - stock.open) * i) / 180 +
+                Math.sin(i * (0.08 + stock.id * 0.013) + stock.id) * 600,
+            );
+      const close =
+        i === 179
+          ? stock.price
+          : open + Math.round(Math.sin(i * 0.4 + stock.id) * 250);
       return {
         time: start + i * 60000,
         open,
-        close: open + Math.round(Math.sin(i * 0.4 + stock.id) * 250),
-        high: open + 450,
-        low: open - 450,
+        close,
+        high: Math.max(open, close) + 450,
+        low: Math.min(open, close) - 450,
         samples: 3,
         volume: 20 + (i % 40),
         turnover: open * (20 + (i % 40)),
@@ -332,15 +339,15 @@ export function makeDemo() {
             .map((o) => ({ ...o, username: account.username })),
           legacyOrders: [],
           summary: {
-            open: stock.open,
-            high: stock.price + 1000,
-            low: stock.open - 1000,
-            close: stock.price,
+            open: bars[0].open,
+            high: Math.max(...bars.map((b) => b.high)),
+            low: Math.min(...bars.map((b) => b.low)),
+            close: bars.at(-1).close,
             previousClose: stock.open,
-            volume: 7200,
-            turnover: 7200 * stock.price,
-            buyVolume: 4500,
-            sellVolume: 2700,
+            volume: bars.reduce((sum, b) => sum + b.volume, 0),
+            turnover: bars.reduce((sum, b) => sum + b.turnover, 0),
+            buyVolume: bars.reduce((sum, b) => sum + b.buyVolume, 0),
+            sellVolume: bars.reduce((sum, b) => sum + b.sellVolume, 0),
           },
           coverage: {
             count: 540,
