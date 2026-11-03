@@ -45,6 +45,7 @@ Next.js 使用 `output: export`，将 `out/` 完整复制为 `dist/`。生产仅
 - 截图检查桌面与 375px 手机：完整表格的水平滚动局限在容器内，页面不横向溢出；控件尺寸保持 Kumo 原值。截图产物在忽略的 `test-results/`。
 - 截图发现表格脚注的类名与 Tailwind `table-caption` 工具类重名，导致脚注变成狭长竖排；已改为独立 `.data-note` 类。
 - 旧哈希链接在已挂载应用内切换时需监听 `hashchange`，否则不更新视图；已修复并在布局用例中覆盖。
+- 长短视图切换时，传统滚动条出现或消失会改变可用宽度 15px，1440px 居中布局左右移动 7.5px。根元素使用 `scrollbar-gutter: stable` 保留占位，不修改 Kumo 控件。回归测试显式移除 Playwright 默认的 `--hide-scrollbars` 参数，在 1280/1440/375px 下逐帧检查导航位置、宽度与页面滚动，避免无滚动条的测试环境漏检。
 
 真实 PostgreSQL 全链路测试在 `e2e/spa-integration.spec.ts`，需专用回环 `EXCHANGE_E2E_DATABASE_URL`。本轮未配置该数据库，未执行真实数据库验证。假数据用例通过不代表线上账本验收。预览仅监听本机回环，未启动 Docker，未调用线上 API，夹具不进入生产产物。
 

@@ -7,6 +7,8 @@
 @layer base {
   :root {
     font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+    /* 长短视图共用滚动条占位，避免切换时可用宽度改变。 */
+    scrollbar-gutter: stable;
   }
   body {
     margin: 0;
