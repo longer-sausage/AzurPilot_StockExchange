@@ -27,6 +27,7 @@ import { useExchange, useNotice } from "../core/Exchange";
 import { request } from "../core/http";
 import { day, delta, money, move, quantity, stockState } from "../core/format";
 import type { Stock } from "../core/contracts";
+import { StockSparkline } from "../features/StockSparkline";
 const initial = {
   listing: "listed",
   state: "all",
@@ -363,7 +364,8 @@ export function MarketPage() {
         </div>
         <div className="toolbar">
           <p className="caption">
-            {list.length} 支证券 · 涨跌幅以当日首条报价为基准
+            {list.length} 支证券 · 涨跌幅以当日首条报价为基准 ·
+            走势为最近报价日的分钟收盘价
           </p>
           <Select
             aria-label="证券排序"
@@ -378,8 +380,10 @@ export function MarketPage() {
               <Table className="min-w-[800px]" aria-label="证券行情">
                 <Table.Header>
                   <Table.Row>
-                    <Table.Head>证券名称</Table.Head>
-                    <Table.Head className="text-right">最新价</Table.Head>
+                    <Table.Head className="min-w-40">证券名称</Table.Head>
+                    <Table.Head className="text-right min-w-40">
+                      最新价 / 分时走势
+                    </Table.Head>
                     <Table.Head className="text-right">今日涨跌</Table.Head>
                     <Table.Head className="text-right">发行剩余</Table.Head>
                     <Table.Head className="text-right">本小时成交</Table.Head>
@@ -390,7 +394,20 @@ export function MarketPage() {
                 </Table.Header>
                 <Table.Body>
                   {list.map((s) => (
-                    <Table.Row key={s.id}>
+                    <Table.Row
+                      key={s.id}
+                      className="cursor-pointer hover:bg-kumo-tint"
+                      onClick={(e) => {
+                        if (
+                          e.defaultPrevented ||
+                          e.button !== 0 ||
+                          (e.target as Element).closest("a, button, input") ||
+                          window.getSelection()?.toString()
+                        )
+                          return;
+                        route.navigate(`/security?stock=${s.id}`);
+                      }}
+                    >
                       <Table.Cell>
                         <div className="grid gap-1">
                           <LinkButton
@@ -413,7 +430,10 @@ export function MarketPage() {
                         </div>
                       </Table.Cell>
                       <Table.Cell className="text-right numeric">
-                        {money(s.price)}
+                        <div className="grid justify-items-end gap-1">
+                          <span>{money(s.price)}</span>
+                          <StockSparkline stock={s} />
+                        </div>
                       </Table.Cell>
                       <Table.Cell
                         className={`text-right numeric ${(delta(s) ?? 0) >= 0 ? "gain" : "loss"}`}

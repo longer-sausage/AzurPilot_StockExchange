@@ -78,7 +78,13 @@ test("真实 Go 行情、图表和固定根地址的 SPA 导航", async ({ page,
     s = await registerStock(request, name);
   expect(s.stock.id).toBeGreaterThan(0);
   await page.goto("/");
-  await page.getByRole("link", { name, exact: true }).click();
+  const row = page
+    .getByRole("row")
+    .filter({ has: page.getByRole("link", { name, exact: true }) });
+  await expect(
+    row.getByRole("img", { name: /分钟报价走势/ }).locator("canvas"),
+  ).toBeVisible();
+  await row.getByText("可交易", { exact: true }).click();
   await expect(page).toHaveURL(/:\d+\/$/);
   await expect(page.locator('[role="img"] canvas')).toBeVisible();
   await page.getByRole("tab", { name: "M5", exact: true }).click();

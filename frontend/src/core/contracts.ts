@@ -204,6 +204,18 @@ export interface Bar {
   buyVolume: number;
   sellVolume: number;
 }
+export interface QuoteChart {
+  stockId: number;
+  interval: number;
+  points: {
+    t: number;
+    o: number;
+    h: number;
+    l: number;
+    c: number;
+    n: number;
+  }[];
+}
 export interface Detail {
   stock: Stock;
   period: Period;

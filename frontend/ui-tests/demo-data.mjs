@@ -180,6 +180,29 @@ export function makeDemo() {
       res.write(`event: change\ndata: {"version":${version}}\n\n`);
   };
   const portfolio = () => ({ account, positions, orders, trades });
+  // 本地夹具的两个图表接口共用同一组模拟历史，正式前端不包含此生成器。
+  const chartBars = (stock, day) => {
+    const start = new Date(day + "T09:30:00+08:00").getTime();
+    return Array.from({ length: 180 }, (_, i) => {
+      const open = Math.round(
+        stock.open +
+          ((stock.price - stock.open) * i) / 180 +
+          Math.sin(i * (0.08 + stock.id * 0.013) + stock.id) * 600,
+      );
+      return {
+        time: start + i * 60000,
+        open,
+        close: open + Math.round(Math.sin(i * 0.4 + stock.id) * 250),
+        high: open + 450,
+        low: open - 450,
+        samples: 3,
+        volume: 20 + (i % 40),
+        turnover: open * (20 + (i % 40)),
+        buyVolume: 12 + (i % 22),
+        sellVolume: 8 + (i % 18),
+      };
+    });
+  };
   const json = (res, data, status = 200) => {
     res.writeHead(status, {
       "Content-Type": "application/json; charset=utf-8",
@@ -264,6 +287,28 @@ export function makeDemo() {
           lifetimeRevenue: fees,
           serverTime: now(),
         });
+      const previewChart = route.match(/^\/public\/stocks\/(\d+)\/chart$/);
+      if (previewChart) {
+        const stock = stocks.find((s) => s.id === Number(previewChart[1]));
+        if (!stock || stock.deletedAt)
+          return error(res, 404, "STOCK_NOT_FOUND", "股票不存在");
+        const from = Number(url.searchParams.get("from")),
+          to = Number(url.searchParams.get("to"));
+        return json(res, {
+          stockId: stock.id,
+          interval: 1,
+          points: chartBars(stock, date())
+            .filter((p) => p.time >= from && p.time <= to)
+            .map((p) => ({
+              t: p.time,
+              o: p.open,
+              h: p.high,
+              l: p.low,
+              c: p.close,
+              n: p.samples,
+            })),
+        });
+      }
       const chart = route.match(/^\/public\/stocks\/(\d+)\/chart-detail$/);
       if (chart) {
         const stock = stocks.find((s) => s.id === Number(chart[1]));
@@ -273,25 +318,7 @@ export function makeDemo() {
           day = url.searchParams.get("day") || date(),
           month = url.searchParams.get("month") || date().slice(0, 7),
           start = new Date(day + "T09:30:00+08:00").getTime();
-        const bars = Array.from({ length: 180 }, (_, i) => {
-          const open = Math.round(
-            stock.open +
-              ((stock.price - stock.open) * i) / 180 +
-              Math.sin(i * 0.18) * 600,
-          );
-          return {
-            time: start + i * 60000,
-            open,
-            close: open + Math.round(Math.sin(i * 0.4) * 250),
-            high: open + 450,
-            low: open - 450,
-            samples: 3,
-            volume: 20 + (i % 40),
-            turnover: open * (20 + (i % 40)),
-            buyVolume: 12 + (i % 22),
-            sellVolume: 8 + (i % 18),
-          };
-        });
+        const bars = chartBars(stock, day);
         return json(res, {
           stock,
           period,
