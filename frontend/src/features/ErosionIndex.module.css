@@ -1,0 +1,44 @@
+.overview {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.index {
+  min-width: 0;
+}
+
+.index .value {
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.index .change {
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.flat {
+  color: var(--text-color-kumo-subtle);
+}
+
+@media (max-width: 1024px) {
+  .overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .index {
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+  }
+
+  .index dt {
+    grid-column: 1 / -1;
+  }
+
+  .change {
+    text-align: right;
+  }
+}
