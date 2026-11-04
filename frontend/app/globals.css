@@ -1,0 +1,440 @@
+@import "tailwindcss";
+@import "@cloudflare/kumo/styles/tailwind";
+@source '../node_modules/@cloudflare/kumo/dist';
+/* 设计约束：市场列表是首页主要内容，交易仅在证券详情。
+   层级：证券名称/价格 > 涨跌与库存 > 代码/更新时间。
+   控件沿用 Kumo，布局只用 8/12/16/24/32px 间距。 */
+@layer base {
+  :root {
+    font-family: Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+    /* 长短视图共用滚动条占位，避免切换时可用宽度改变。 */
+    scrollbar-gutter: stable;
+  }
+  body {
+    margin: 0;
+    background: var(--color-kumo-base);
+    color: var(--text-color-kumo-default);
+    font-size: 14px;
+    line-height: 1.6;
+  }
+  h1 {
+    font-size: 32px;
+    font-weight: 600;
+    line-height: 1.2;
+  }
+  h2 {
+    font-size: 20px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+  h3 {
+    font-size: 16px;
+    font-weight: 600;
+  }
+  small {
+    font-size: 12px;
+  }
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+  strong,
+  b {
+    font-weight: 600;
+  }
+  code {
+    font-family: ui-monospace, monospace;
+    font-size: 0.9em;
+  }
+}
+@layer components {
+  .site-header {
+    border-bottom: 1px solid var(--color-kumo-line);
+    background: var(--color-kumo-base);
+  }
+  .header-inner,
+  .navigation,
+  .site-footer,
+  .page {
+    max-width: 1280px;
+    margin-inline: auto;
+  }
+  .header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 24px 32px;
+  }
+  .wordmark {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 20px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .wordmark-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    object-fit: cover;
+    flex-shrink: 0;
+    display: block;
+  }
+  .wordmark-secondary {
+    margin-left: 8px;
+    font-size: 14px;
+    font-weight: 400;
+    color: var(--text-color-kumo-subtle);
+  }
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .navigation {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 0 32px;
+  }
+  .connection-label,
+  .caption {
+    font-size: 12px;
+    color: var(--text-color-kumo-subtle);
+  }
+  .page {
+    padding: 40px 32px 64px;
+    display: grid;
+    gap: 32px;
+    min-height: 65dvh;
+    align-content: start;
+  }
+  .page-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 24px;
+  }
+  .page-heading p {
+    margin-top: 12px;
+    max-width: 65ch;
+    color: var(--text-color-kumo-subtle);
+  }
+  .eyebrow {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-color-kumo-subtle);
+    margin-bottom: 12px;
+  }
+  .overview {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 24px;
+    padding: 24px 0;
+    border-block: 1px solid var(--color-kumo-line);
+  }
+  .overview > div {
+    display: grid;
+    gap: 8px;
+  }
+  .overview dt {
+    color: var(--text-color-kumo-subtle);
+  }
+  .overview dd {
+    font-size: 24px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .data-card {
+    min-width: 0;
+    overflow: hidden;
+  }
+  .card-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--color-kumo-line);
+  }
+  .card-heading h2 {
+    font-size: 16px;
+  }
+  .card-body {
+    padding: 24px;
+    display: grid;
+    gap: 24px;
+  }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+  .toolbar-group {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .toolbar-search {
+    width: 280px;
+    max-width: 100%;
+  }
+  .table-region {
+    width: 100%;
+    overflow: auto;
+  }
+  .data-note {
+    padding: 16px 24px;
+    border-top: 1px solid var(--color-kumo-line);
+    font-size: 12px;
+    color: var(--text-color-kumo-subtle);
+  }
+  .numeric {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .gain {
+    color: var(--text-color-kumo-danger);
+  }
+  .loss {
+    color: var(--text-color-kumo-success);
+  }
+  .muted {
+    color: var(--text-color-kumo-subtle);
+  }
+  .stack {
+    display: grid;
+    gap: 24px;
+  }
+  .form-stack {
+    display: grid;
+    gap: 20px;
+  }
+  .fields {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+  }
+  .fields-three {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 24px;
+  }
+  .split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 352px;
+    gap: 24px;
+    align-items: start;
+  }
+  .two-columns {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+    align-items: start;
+  }
+  .price-display {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+  }
+  .price-display strong {
+    font-size: 40px;
+    line-height: 1.2;
+  }
+  .definition-list {
+    display: grid;
+    gap: 16px;
+  }
+  .definition-list > div {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 24px;
+  }
+  .definition-list dt {
+    color: var(--text-color-kumo-subtle);
+  }
+  .definition-list dd {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+  .chart-content {
+    padding: 24px;
+    display: grid;
+    gap: 20px;
+  }
+  .chart-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .chart-metadata {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--text-color-kumo-subtle);
+  }
+  .dialog-content {
+    padding: 24px;
+    display: grid;
+    gap: 24px;
+    max-height: calc(100dvh - 80px);
+    overflow-y: auto;
+  }
+  .dialog-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+  }
+  .instructions {
+    list-style: decimal;
+    padding-left: 20px;
+    display: grid;
+    gap: 16px;
+  }
+  .inline-actions {
+    display: flex;
+    align-items: center;
+    justify-content: end;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .guide-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 24px;
+  }
+  .prose {
+    max-width: 70ch;
+    display: grid;
+    gap: 16px;
+    line-height: 1.8;
+  }
+  .prose p {
+    color: var(--text-color-kumo-subtle);
+  }
+  .admin-login {
+    max-width: 440px;
+    width: 100%;
+    margin: 48px auto;
+  }
+  .save-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 20px 0;
+    border-top: 1px solid var(--color-kumo-line);
+  }
+  .site-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding: 24px 32px;
+    border-top: 1px solid var(--color-kumo-line);
+    font-size: 12px;
+    color: var(--text-color-kumo-subtle);
+  }
+  .site-footer > div {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+}
+@media (max-width: 1024px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .connection-label {
+    display: none;
+  }
+  .guide-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 640px) {
+  .header-inner {
+    padding: 20px 16px;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .wordmark-secondary {
+    display: none;
+  }
+  .header-actions {
+    gap: 4px;
+  }
+  .header-actions > span {
+    display: none;
+  }
+  .navigation {
+    padding: 0 16px;
+  }
+  .page {
+    padding: 24px 16px 40px;
+    gap: 24px;
+  }
+  .page-heading {
+    align-items: start;
+    flex-direction: column;
+    gap: 16px;
+  }
+  h1 {
+    font-size: 28px;
+  }
+  .overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 24px;
+  }
+  .overview dd {
+    font-size: 20px;
+  }
+  .two-columns,
+  .fields,
+  .fields-three,
+  .guide-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .card-body,
+  .chart-content {
+    padding: 20px;
+  }
+  .card-heading {
+    padding: 16px 20px;
+  }
+  .site-footer {
+    padding: 24px 16px;
+    align-items: start;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .price-display strong {
+    font-size: 32px;
+  }
+  .save-bar {
+    align-items: start;
+    flex-direction: column;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
