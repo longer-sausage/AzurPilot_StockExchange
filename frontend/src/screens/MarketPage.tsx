@@ -28,6 +28,8 @@ import { request } from "../core/http";
 import { day, delta, money, move, quantity, stockState } from "../core/format";
 import type { Stock } from "../core/contracts";
 import { StockSparkline } from "../features/StockSparkline";
+import { ErosionIndex } from "../features/ErosionIndex";
+import indexStyles from "../features/ErosionIndex.module.css";
 const initial = {
   listing: "listed",
   state: "all",
@@ -180,7 +182,8 @@ export function MarketPage() {
           {x.market?.open ? "市场开放" : "暂未开市"}
         </Badge>
       </div>
-      <dl className="overview">
+      <dl className={`overview ${indexStyles.overview}`}>
+        <ErosionIndex stocks={stocks} now={x.now} quoteTTLSeconds={ttl} />
         <div>
           <dt>上市证券</dt>
           <dd>
