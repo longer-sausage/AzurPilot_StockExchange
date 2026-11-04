@@ -20,8 +20,9 @@ async function renderedColors(canvas: Locator, top: number, bottom: number) {
           const r = data[i],
             g = data[i + 1],
             b = data[i + 2];
-          if (r > 200 && g > 40 && g < 140 && b < 140) red++;
-          if (r < 80 && g > 120 && g < 200 && b < 110) green++;
+          // 判断红/绿通道优势，兼容主题色明度变化，仍排除灰、黄和青色指标线。
+          if (r - g >= 60 && r - b >= 60) red++;
+          if (g - r >= 60 && g - b >= 24) green++;
         }
       }
       return { red, green };

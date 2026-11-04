@@ -1,6 +1,6 @@
 "use client";
 import { useRoute } from "./core/router";
-import { Component, type ReactNode } from "react";
+import { Component, useEffect, useMemo, type ReactNode } from "react";
 import { Badge, Banner, Button, LinkButton, Tabs } from "@cloudflare/kumo";
 import {
   MoonIcon,
@@ -10,6 +10,9 @@ import {
 } from "@phosphor-icons/react";
 import { Exchange, useExchange, useNotice } from "./core/Exchange";
 import { AccountAccess } from "./features/AccountAccess";
+import { marketOpening, openingWindow } from "./core/marketOpening";
+import { OpeningPage } from "./screens/OpeningPage";
+import openingStyles from "./screens/OpeningPage.module.css";
 import { MarketPage } from "./screens/MarketPage";
 import { SecurityPage } from "./screens/SecurityPage";
 import { PortfolioPage } from "./screens/PortfolioPage";
@@ -50,6 +53,18 @@ function Workspace() {
     notice = useNotice(),
     path = route.path,
     admin = path === "/console";
+  const minuteStart = Math.floor(x.now / 60000) * 60000,
+    opensAt = useMemo(
+      () => marketOpening(x.market, x.settings, minuteStart),
+      [x.market, x.settings, minuteStart],
+    ),
+    countdown =
+      !admin && opensAt !== undefined && opensAt - x.now <= openingWindow,
+    loading = !admin && (!x.market || !x.settings),
+    openingReached = countdown && x.now >= opensAt;
+  useEffect(() => {
+    if (openingReached) void x.refresh();
+  }, [openingReached, opensAt, x.refresh]);
   const current = path === "/security" ? "/" : path;
   const titles: Record<string, string> = {
     "/": "证券市场",
@@ -119,7 +134,9 @@ function Workspace() {
                 </>
               ) : (
                 <Button
-                  variant={path === "/security" ? "secondary" : "primary"}
+                  variant={
+                    countdown || path !== "/security" ? "primary" : "secondary"
+                  }
                   onClick={() => x.setLoginOpen(true)}
                 >
                   登录交易账户
@@ -150,7 +167,7 @@ function Workspace() {
             )}
           </div>
         </div>
-        {!admin && (
+        {!admin && !countdown && !loading && (
           <div className="navigation">
             <Tabs
               variant="underline"
@@ -168,8 +185,8 @@ function Workspace() {
         )}
       </header>
       <main
-        className={`page ${admin ? "admin-page" : ""}`}
-        aria-label={titles[path] ?? "证券市场"}
+        className={`page ${admin ? "admin-page" : countdown || loading ? openingStyles.page : ""}`}
+        aria-label={countdown ? "开市倒计时" : (titles[path] ?? "证券市场")}
       >
         {x.error && (
           <Banner
@@ -180,7 +197,13 @@ function Workspace() {
           />
         )}
         <Recovery>
-          {path === "/security" ? (
+          {loading ? (
+            <p className="caption text-center" role="status">
+              正在同步开市时间…
+            </p>
+          ) : countdown ? (
+            <OpeningPage opensAt={opensAt} />
+          ) : path === "/security" ? (
             <SecurityPage />
           ) : path === "/portfolio" ? (
             <PortfolioPage />

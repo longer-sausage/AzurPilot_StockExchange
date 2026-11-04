@@ -1,0 +1,58 @@
+.page {
+  align-content: center;
+  min-height: 70dvh;
+}
+
+.opening {
+  display: grid;
+  justify-items: center;
+  gap: 32px;
+  padding-block: 64px;
+  text-align: center;
+}
+
+.timer {
+  display: flex;
+  gap: 32px;
+}
+
+.unit {
+  position: relative;
+  display: grid;
+  gap: 12px;
+}
+
+.digits {
+  font-size: 96px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.colon {
+  position: absolute;
+  right: calc(100% + 8px);
+  color: var(--text-color-kumo-subtle);
+  font-size: 64px;
+  line-height: 1.5;
+}
+
+.details {
+  display: grid;
+  gap: 12px;
+  max-width: 65ch;
+}
+
+@media (max-width: 640px) {
+  .timer {
+    gap: 24px;
+  }
+
+  .digits {
+    font-size: 48px;
+  }
+
+  .colon {
+    font-size: 32px;
+  }
+}
