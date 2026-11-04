@@ -129,8 +129,9 @@ export function OrderRecords({
                       {statuses[o.status] ?? o.status}
                     </Badge>
                     <p className="caption">
-                      {o.timeInForce} ·{" "}
-                      {o.expiresAt ? date(o.expiresAt) : "赛季内有效"}
+                      {o.kind === "market" || (o.kind === "stop" && o.triggered)
+                        ? "立即成交 · 余量撤销"
+                        : `${o.timeInForce} · ${o.expiresAt ? date(o.expiresAt) : "赛季内有效"}`}
                     </p>
                     {o.reason && <p className="caption">{o.reason}</p>}
                   </Table.Cell>

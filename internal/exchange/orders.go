@@ -27,6 +27,9 @@ func commission(s Settings, amount int64) int64 {
 }
 func buying(side string) bool    { return side == "buy" || side == "cover" }
 func borrowing(side string) bool { return side == "short" || side == "cover" }
+func immediateOrder(o *Order) bool {
+	return o.Kind == "market" || (o.Kind == "stop" && o.Triggered)
+}
 
 // 分量分别按比例向下取整；最后一股取尽余数。冻结、可付金额和落账必须复用同一公式。
 func portion(value, quantity, total int64) int64 {
@@ -304,7 +307,7 @@ func (e *Engine) Confirm(id int64, previewID string) (*Order, error) {
 		}
 		a = m.account(id)
 		expires := int64(0)
-		if p.TimeInForce == "DAY" {
+		if p.TimeInForce == "DAY" && p.Kind != "market" {
 			loc, _ := MarketLocation(p.Rules.Timezone)
 			now := e.clock().In(loc)
 			expires = time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, loc).UnixMilli()
@@ -376,6 +379,14 @@ func (m *mutation) fill(a *Account, s *Stock, o *Order, now int64, forced bool) 
 	if o.Remaining <= 0 {
 		return nil
 	}
+	if !forced {
+		// 市价委托仅尝试本次撮合，包括零成交；解冻与成交在同一事务提交。
+		defer func() {
+			if o.Status == "pending" && immediateOrder(o) {
+				m.cancel(a, o, now, "市价委托未成交余量自动撤销")
+			}
+		}()
+	}
 	if !forced && (a.BoundStockID == 0 || m.readStock(a.BoundStockID) == nil || m.readStock(a.BoundStockID).DeletedAt != 0) {
 		m.cancel(a, o, now, "账户未绑定股票，撤销委托")
 		return nil
@@ -398,6 +409,13 @@ func (m *mutation) fill(a *Account, s *Stock, o *Order, now int64, forced bool) 
 		return err
 	}
 	m.settleCash(a, now)
+	if !forced && o.Kind == "stop" && !o.Triggered {
+		if (buying(o.Side) && s.Price >= o.Price) || (!buying(o.Side) && s.Price <= o.Price) {
+			o.Triggered = true
+		} else {
+			return nil
+		}
+	}
 	quantity := o.Remaining
 	available := s.HourlyVolume - s.NormalUsed
 	if borrowing(o.Side) {
@@ -447,15 +465,24 @@ func (m *mutation) fill(a *Account, s *Stock, o *Order, now int64, forced bool) 
 	if forced {
 		price = s.Price
 	}
-	if !forced && o.Kind == "stop" && !o.Triggered {
-		if (buying(o.Side) && s.Price >= o.Price) || (!buying(o.Side) && s.Price <= o.Price) {
-			o.Triggered = true
-		} else {
+	if !forced && o.Kind != "market" && o.Kind != "stop" && ((buying(o.Side) && price > o.Price) || (!buying(o.Side) && price < o.Price)) {
+		// 整批溢价越过限价时，仍成交符合限价的最大整手数量。
+		// 数量越小，买入/回补报价越低，卖出/卖空报价越高。
+		lo, hi := int64(0), quantity/lot
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			candidate, _ := executionPrice(s, o.Side, mid*lot, rules)
+			if (buying(o.Side) && candidate <= o.Price) || (!buying(o.Side) && candidate >= o.Price) {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		quantity = lo * lot
+		if quantity == 0 {
 			return nil
 		}
-	}
-	if !forced && o.Kind != "market" && o.Kind != "stop" && ((buying(o.Side) && price > o.Price) || (!buying(o.Side) && price < o.Price)) {
-		return nil
+		price, _ = executionPrice(s, o.Side, quantity, rules)
 	}
 	tr := int64(0)
 	if newTaxes(rules) {
@@ -629,7 +656,7 @@ func (m *mutation) fill(a *Account, s *Stock, o *Order, now int64, forced bool) 
 	}
 	if o.Remaining == 0 {
 		o.Status = "filled"
-	} else {
+	} else if forced || !immediateOrder(o) {
 		o.Status = "pending"
 		in := OrderInput{Kind: o.Kind, TimeInForce: o.TimeInForce, Side: o.Side, Quantity: o.Remaining, Price: o.Price, Leverage: o.Leverage}
 		snapshot := rules

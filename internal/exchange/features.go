@@ -285,6 +285,10 @@ func (m *mutation) cleanPending(now int64) {
 		}
 		a := m.readAccount(o.AccountID)
 		s := m.readStock(o.StockID)
+		if immediateOrder(o) {
+			m.cancel(m.account(a.ID), m.order(id), now, "市价委托未成交余量自动撤销")
+			continue
+		}
 		if o.ExpiresAt > 0 && now >= o.ExpiresAt {
 			fresh := m.order(id)
 			m.cancel(m.account(a.ID), fresh, now, "DAY 委托到期")

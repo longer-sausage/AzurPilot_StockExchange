@@ -177,3 +177,100 @@ func TestPostgresPersistenceRollbackHistoryAndExclusiveProcess(t *testing.T) {
 		t.Fatal("Postgres restart lost idempotency receipt", err)
 	}
 }
+
+func TestPostgresMarketRemainderRollbackAndStartupCleanup(t *testing.T) {
+	dsn := os.Getenv("EXCHANGE_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("未配置 EXCHANGE_TEST_DATABASE_URL；真实 Postgres 集成检查未执行")
+	}
+	parsed, err := url.Parse(dsn)
+	if err != nil || !strings.Contains(parsed.Path, "_test") || (parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "localhost") {
+		t.Fatal("集成测试只允许回环地址、名称含 _test 的隔离数据库")
+	}
+	store, err := OpenPostgres(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.db.Exec("ALTER TABLE mmex_v2_entities DROP CONSTRAINT IF EXISTS injected_failure; TRUNCATE mmex_v2_entities,mmex_v2_history,mmex_v2_months"); err != nil {
+		t.Fatal(err)
+	}
+	f := newFixture(t)
+	entities, _ := f.store.Load()
+	if err := store.Commit(entities, nil); err != nil {
+		t.Fatal(err)
+	}
+	f.e, err = NewEngine(store, func() time.Time { return f.now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := f.account("Pg市价交易者")
+	stock := *f.e.stocks[1]
+	stock.HourlyVolume = 3
+	if err := f.e.UpdateStock(1, stock); err != nil {
+		t.Fatal(err)
+	}
+	p, err := f.e.Preview(a.ID, OrderInput{Stock: "1", Side: "buy", Kind: "market", Quantity: 9, ClientID: "pg-market-partial"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := string(encode([]any{f.e.meta, f.e.accounts, f.e.stocks, f.e.orders, f.e.trades}))
+	_, changes := f.e.Changes()
+	if _, err := store.db.Exec("ALTER TABLE mmex_v2_entities ADD CONSTRAINT injected_failure CHECK (kind <> 'account') NOT VALID"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.e.Confirm(a.ID, p.PreviewID); err == nil {
+		t.Fatal("真实数据库故障未阻止市价单成交和撤销余量")
+	}
+	if string(encode([]any{f.e.meta, f.e.accounts, f.e.stocks, f.e.orders, f.e.trades})) != before {
+		t.Fatal("市价单失败事务改变内存账本")
+	}
+	select {
+	case <-changes:
+		t.Fatal("市价单失败事务发送通知")
+	default:
+	}
+	var persisted int
+	if err := store.db.QueryRow("SELECT count(*) FROM mmex_v2_entities WHERE kind IN ('order','trade')").Scan(&persisted); err != nil || persisted != 0 {
+		t.Fatal("市价单失败事务留下委托或成交", err)
+	}
+	if _, err := store.db.Exec("ALTER TABLE mmex_v2_entities DROP CONSTRAINT injected_failure"); err != nil {
+		t.Fatal(err)
+	}
+	o, err := f.e.Confirm(a.ID, p.PreviewID)
+	if err != nil || o.Filled != 3 || o.Remaining != 6 || o.Status != "cancelled" || f.e.accounts[a.ID].Reserved != 0 {
+		t.Fatal("真实数据库市价单未撤销余量并解冻", o, err)
+	}
+	// 模拟旧版市价挂单，验证启动修复同样受真实事务保护。
+	if err := f.e.transaction(func(m *mutation) error {
+		old := m.order(o.ID)
+		old.Status, old.Reserved = "pending", 600000
+		m.account(a.ID).Reserved += old.Reserved
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec("ALTER TABLE mmex_v2_entities ADD CONSTRAINT injected_failure CHECK (kind <> 'account') NOT VALID"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewEngine(store, func() time.Time { return f.now }); err == nil {
+		t.Fatal("真实数据库启动清理失败却成功启动")
+	}
+	if err := store.db.QueryRow("SELECT count(*) FROM mmex_v2_entities WHERE kind='order' AND data->>'status'='pending'").Scan(&persisted); err != nil || persisted != 1 {
+		t.Fatal("失败启动清理部分提交", err)
+	}
+	if _, err := store.db.Exec("ALTER TABLE mmex_v2_entities DROP CONSTRAINT injected_failure"); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewEngine(store, func() time.Time { return f.now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restarted.orders[o.ID]; got.Status != "cancelled" || got.Filled != 3 || got.Remaining != 6 || got.Reserved != 0 || restarted.accounts[a.ID].Reserved != 0 || len(restarted.trades) != 1 {
+		t.Fatal("真实数据库启动清理丢失成交或未解冻", got)
+	}
+	again, err := restarted.Confirm(a.ID, p.PreviewID)
+	if err != nil || again.ID != o.ID || again.Filled != 3 || len(restarted.trades) != 1 {
+		t.Fatal("真实数据库重启后重复成交", err)
+	}
+}
