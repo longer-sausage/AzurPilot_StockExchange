@@ -156,6 +156,13 @@ func NewEngine(store Store, clock Clock) (*Engine, error) {
 	if err = e.migrateFeatures(); err != nil {
 		return nil, err
 	}
+	// 升级时先原子撤销旧版遗留的市价余量，避免整点再次成交。
+	if err = e.transaction(func(m *mutation) error {
+		m.cleanPending(clock().UnixMilli())
+		return nil
+	}); err != nil {
+		return nil, err
+	}
 	return e, nil
 }
 func (e *Engine) Close() error { return e.store.Close() }

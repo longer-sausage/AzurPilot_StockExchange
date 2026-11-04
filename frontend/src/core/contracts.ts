@@ -122,6 +122,7 @@ export interface Order {
   stockName?: string;
   side: Side;
   kind: string;
+  triggered: boolean;
   timeInForce: string;
   expiresAt: number;
   leverage: number;

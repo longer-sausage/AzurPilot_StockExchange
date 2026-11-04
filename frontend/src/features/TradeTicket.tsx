@@ -106,9 +106,11 @@ export function TradeTicket({ stock }: { stock: Stock }) {
       notice(
         result.order.status === "rejected"
           ? `委托提交失败：${result.order.reason ?? "请核对后重试"}`
-          : result.order.filled
-            ? `委托 #${result.order.id} 已成功成交 ${quantity(result.order.filled)} 股，均价 ${money(result.order.averagePrice)}`
-            : `委托 #${result.order.id} 已挂单，排队等待撮合中`,
+          : result.order.status === "cancelled"
+            ? `委托 #${result.order.id} 已成交 ${quantity(result.order.filled)} 股，剩余 ${quantity(result.order.remaining)} 股已撤销`
+            : result.order.filled
+              ? `委托 #${result.order.id} 已成功成交 ${quantity(result.order.filled)} 股，均价 ${money(result.order.averagePrice)}${result.order.remaining ? "，余量挂单" : ""}`
+              : `委托 #${result.order.id} 已挂单，排队等待撮合中`,
         result.order.status === "rejected",
       );
       await x.refresh();
@@ -154,8 +156,13 @@ export function TradeTicket({ stock }: { stock: Stock }) {
             <Select
               label="有效期"
               value={tif}
+              disabled={kind === "market"}
               onValueChange={(v) => setTif(String(v))}
-              items={{ GTC: "本赛季有效", DAY: "当日有效" }}
+              items={
+                kind === "market"
+                  ? { [tif]: "立即成交，余量自动撤销" }
+                  : { GTC: "本赛季有效", DAY: "当日有效" }
+              }
             />
           </div>
           <Input
@@ -180,7 +187,13 @@ export function TradeTicket({ stock }: { stock: Stock }) {
             ))}
           </div>
           <Input
-            label={kind === "stop" ? "触发股价" : "委托限价"}
+            label={
+              kind === "stop"
+                ? "触发股价"
+                : kind === "market"
+                  ? "参考股价"
+                  : "委托限价"
+            }
             inputMode="decimal"
             value={kind === "market" ? (stock.price / 100).toFixed(2) : price}
             onChange={(e) => setPrice(e.target.value)}
@@ -225,7 +238,12 @@ export function TradeTicket({ stock }: { stock: Stock }) {
           )}
           {blocked && <Banner variant="secondary" description={blocked} />}
           <p className="caption">
-            在每小时流动性额度内可立即撮合成交，超出部分会自动挂单并在整点撮合；预估税费与保证金扣减以下一步预览明细为准。
+            {kind === "market"
+              ? "立即按当前有效报价与溢价成交，未成交余量自动撤销并解冻，不进入挂单。"
+              : kind === "stop"
+                ? "达到触发价后转为市价，未成交余量自动撤销并解冻；未触发时按有效期等待整点检查。"
+                : "限价委托在每小时流动性额度内可立即撮合成交，超出部分会自动挂单并在整点撮合；实际成交受溢价、额度和限价约束。"}
+            预估税费与保证金扣减以下一步预览明细为准。
           </p>
           {error && !preview && (
             <Banner variant="error" role="alert" description={error} />
@@ -272,7 +290,20 @@ export function TradeTicket({ stock }: { stock: Stock }) {
               <dl className="definition-list">
                 {[
                   ["数量", `${quantity(preview.quantity)} 股`],
-                  ["委托价格", money(preview.price)],
+                  [
+                    preview.kind === "market"
+                      ? "参考股价"
+                      : preview.kind === "stop"
+                        ? "触发股价"
+                        : "委托价格",
+                    money(preview.price),
+                  ],
+                  [
+                    "有效期",
+                    preview.kind === "market"
+                      ? "立即成交，余量撤销"
+                      : preview.timeInForce,
+                  ],
                   ["成交额", money(preview.notional)],
                   ["税率", percent(preview.taxRatePPM)],
                   [
@@ -299,6 +330,11 @@ export function TradeTicket({ stock }: { stock: Stock }) {
               <p className="caption">
                 此预览明细有效至 {date(preview.expiresAt)}
                 。提交时系统会再次核验最新股价与账户资产；请放心，重复点击确认不会导致重复扣款或重复下单。
+                {preview.kind === "market"
+                  ? "未成交余量自动撤销并解冻，不进入挂单。"
+                  : preview.kind === "stop"
+                    ? "未触发时保留委托；触发后未成交余量自动撤销并解冻。"
+                    : "未成交部分保留为挂单。"}
               </p>
               {error && (
                 <Banner variant="error" role="alert" description={error} />
