@@ -12,8 +12,27 @@
 }
 
 .timer {
+  display: grid;
+  gap: 24px;
+  justify-items: center;
+}
+
+.units {
   display: flex;
   gap: 32px;
+}
+
+.subseconds {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.subsecondDigits {
+  font-size: 32px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
 }
 
 .unit {
@@ -44,7 +63,7 @@
 }
 
 @media (max-width: 640px) {
-  .timer {
+  .units {
     gap: 24px;
   }
 
@@ -54,5 +73,9 @@
 
   .colon {
     font-size: 32px;
+  }
+
+  .subsecondDigits {
+    font-size: 24px;
   }
 }

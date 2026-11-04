@@ -3,6 +3,7 @@ import defaults from "../../config/defaults.json" with { type: "json" };
 import meow from "../../config/presets/meow.json" with { type: "json" };
 import type { Market, Settings } from "../src/core/contracts";
 import { marketOpening, openingWindow } from "../src/core/marketOpening";
+import { countdownNanoseconds } from "../src/core/useCountdown";
 
 const opensAt = Date.parse("2026-11-05T00:00:00+08:00"),
   noon = opensAt - 12 * 3600000;
@@ -90,13 +91,35 @@ test("分段交易、周末、假日和市场时区决定真正开市时间", ()
   expect(at("2026-11-04T12:00:00+08:00")).toBeUndefined();
 });
 
+test("纳秒换算保持九位余数、24 小时整数精度及到零边界", () => {
+  expect(countdownNanoseconds(opensAt, opensAt - 1000, 123.456789)).toBe(
+    876543211n,
+  );
+  expect(countdownNanoseconds(opensAt, opensAt - 1, 0.999999)).toBe(1n);
+  expect(countdownNanoseconds(opensAt, opensAt - 1, 1)).toBe(0n);
+  expect(countdownNanoseconds(opensAt, opensAt - 1, 1000)).toBe(0n);
+  expect(countdownNanoseconds(opensAt, opensAt + 1)).toBe(0n);
+  expect(countdownNanoseconds(opensAt, opensAt - openingWindow, 0.000001)).toBe(
+    86_399_999_999_999n,
+  );
+});
+
 test.beforeEach(async ({ request }) => {
   expect((await request.post("/__demo/reset")).status()).toBe(204);
 });
 
-async function mockOpening(page: Page, start = noon) {
+async function mockOpening(page: Page, start = noon, liveClock = false) {
   const state = { open: false, paused: false, requests: 0, fail: false };
   await page.clock.setFixedTime(start);
+  if (!liveClock)
+    await page.addInitScript(() => {
+      // Date 已由 Playwright 固定；让单调时钟同步受控，消除真实逐帧走时。
+      const wallTime = Date.now(),
+        monotonicTime = performance.now();
+      Object.defineProperty(performance, "now", {
+        value: () => monotonicTime + (Date.now() - wallTime),
+      });
+    });
   await page.route("**/api/v2/public/market", async (route) => {
     state.requests++;
     if (state.fail)
@@ -132,14 +155,14 @@ test("24 小时外保留原页面，进入窗口后只显示倒计时且每秒�
   await expect(page.getByRole("table", { name: "证券行情" })).toBeVisible();
   await page.clock.setFixedTime(opensAt - openingWindow);
   await expect(page.getByRole("timer")).toHaveAccessibleName(
-    "距离开市还有 24 小时 0 分 0 秒",
+    "距离开市还有 24 小时 0 分 0 秒 000000000 纳秒",
   );
   await expect(page.getByRole("tab")).toHaveCount(0);
   await expect(page.getByLabel("市场状态", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("table", { name: "证券行情" })).toHaveCount(0);
   await page.clock.setFixedTime(opensAt - openingWindow + 1000);
   await expect(page.getByRole("timer")).toHaveAccessibleName(
-    "距离开市还有 23 小时 59 分 59 秒",
+    "距离开市还有 23 小时 59 分 59 秒 000000000 纳秒",
   );
   await expect(
     page.getByText("2026/11/5 00:00:00", { exact: true }),
@@ -284,7 +307,7 @@ test("到点主动刷新，失败保留零值倒计时，后端确认后自动�
   const state = await mockOpening(page, opensAt - 2000);
   await page.goto("/#/guide");
   await expect(page.getByRole("timer")).toHaveAccessibleName(
-    "距离开市还有 0 小时 0 分 2 秒",
+    "距离开市还有 0 小时 0 分 2 秒 000000000 纳秒",
   );
   await expect.poll(() => state.requests).toBeGreaterThan(0);
   // 等初次 SSE 合并刷新完成，再隔离到点的请求。
@@ -300,7 +323,7 @@ test("到点主动刷新，失败保留零值倒计时，后端确认后自动�
   await page.clock.setFixedTime(opensAt);
   await expect.poll(() => state.requests).toBeGreaterThan(before);
   await expect(page.getByRole("timer")).toHaveAccessibleName(
-    "距离开市还有 0 小时 0 分 0 秒",
+    "距离开市还有 0 小时 0 分 0 秒 000000000 纳秒",
   );
   await expect(
     page.getByText("隔离测试：开市状态暂不可用", { exact: true }),
@@ -353,4 +376,46 @@ test("桌面与手机明暗主题倒计时无横向溢出", async ({ page }) => 
       });
     }
   }
+});
+
+test("最后一毫秒继续显示纳秒，归零前不提前确认开市", async ({ page }) => {
+  const state = await mockOpening(page, opensAt - 1);
+  await page.goto("/");
+  await expect(page.getByRole("timer")).toHaveAccessibleName(
+    "距离开市还有 0 小时 0 分 0 秒 001000000 纳秒",
+  );
+  const confirming = page.getByText(
+    "正在确认开市状态，确认后将自动进入交易站。",
+    { exact: true },
+  );
+  await expect(confirming).toHaveCount(0);
+  await expect.poll(() => state.requests).toBe(2);
+  await page.clock.setFixedTime(opensAt);
+  await expect(page.getByRole("timer")).toHaveAccessibleName(
+    "距离开市还有 0 小时 0 分 0 秒 000000000 纳秒",
+  );
+  await expect(confirming).toBeVisible();
+  await expect.poll(() => state.requests).toBeGreaterThan(2);
+});
+
+test("原生高精度时钟逐帧更新九位纳秒，不重复请求后端", async ({ page }) => {
+  const state = await mockOpening(page, noon, true);
+  await page.goto("/");
+  const timer = page.getByRole("timer"),
+    nanos = timer.getByText(/^\d{9}$/);
+  await expect(nanos).toBeVisible();
+  await expect(timer).toHaveAttribute("aria-live", "off");
+  await expect.poll(() => state.requests).toBe(2);
+  const first = await nanos.textContent();
+  await expect.poll(() => nanos.textContent()).not.toBe(first);
+  await expect(nanos).not.toHaveText("000000000");
+  await expect(
+    page.getByText("正在确认开市状态，确认后将自动进入交易站。", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  expect(state.requests).toBe(2);
+  await page.getByRole("link", { name: "管理", exact: true }).click();
+  await expect(page.getByLabel("管理员密码")).toBeVisible();
+  await expect(timer).toHaveCount(0);
 });
