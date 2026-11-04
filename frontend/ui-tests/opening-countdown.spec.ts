@@ -3,7 +3,10 @@ import defaults from "../../config/defaults.json" with { type: "json" };
 import meow from "../../config/presets/meow.json" with { type: "json" };
 import type { Market, Settings } from "../src/core/contracts";
 import { marketOpening, openingWindow } from "../src/core/marketOpening";
-import { countdownNanoseconds } from "../src/core/useCountdown";
+import {
+  countdownNanoseconds,
+  simulateCountdown,
+} from "../src/core/useCountdown";
 
 const opensAt = Date.parse("2026-11-05T00:00:00+08:00"),
   noon = opensAt - 12 * 3600000;
@@ -104,6 +107,23 @@ test("纳秒换算保持九位余数、24 小时整数精度及到零边界", ()
   );
 });
 
+test("模拟尾数保留实际时间高位，末五位变化且到零归零", () => {
+  const values = Array.from({ length: 16 }, (_, frame) =>
+    simulateCountdown(285600000n, frame),
+  );
+  for (const value of values) {
+    expect(value / 100_000n).toBe(2856n);
+    expect(value % 100_000n).toBeGreaterThan(0n);
+  }
+  for (let digit = 0; digit < 5; digit++)
+    expect(
+      new Set(values.map((value) => String(value).slice(-5)[digit])).size,
+    ).toBeGreaterThan(1);
+  expect(simulateCountdown(1n, 0)).toBeGreaterThan(0n);
+  expect(simulateCountdown(999999999n, 0)).toBeLessThan(1_000_000_000n);
+  expect(simulateCountdown(0n, 0)).toBe(0n);
+});
+
 test.beforeEach(async ({ request }) => {
   expect((await request.post("/__demo/reset")).status()).toBe(204);
 });
@@ -155,14 +175,14 @@ test("24 小时外保留原页面，进入窗口后只显示倒计时且每秒�
   await expect(page.getByRole("table", { name: "证券行情" })).toBeVisible();
   await page.clock.setFixedTime(opensAt - openingWindow);
   await expect(page.getByRole("timer")).toHaveAccessibleName(
-    "距离开市还有 24 小时 0 分 0 秒 000000000 纳秒",
+    /^距离开市还有 24:00:00:0000\d{5}$/,
   );
   await expect(page.getByRole("tab")).toHaveCount(0);
   await expect(page.getByLabel("市场状态", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("table", { name: "证券行情" })).toHaveCount(0);
   await page.clock.setFixedTime(opensAt - openingWindow + 1000);
   await expect(page.getByRole("timer")).toHaveAccessibleName(
-    "距离开市还有 23 小时 59 分 59 秒 000000000 纳秒",
+    /^距离开市还有 23:59:59:0000\d{5}$/,
   );
   await expect(
     page.getByText("2026/11/5 00:00:00", { exact: true }),
@@ -307,7 +327,7 @@ test("到点主动刷新，失败保留零值倒计时，后端确认后自动�
   const state = await mockOpening(page, opensAt - 2000);
   await page.goto("/#/guide");
   await expect(page.getByRole("timer")).toHaveAccessibleName(
-    "距离开市还有 0 小时 0 分 2 秒 000000000 纳秒",
+    /^距离开市还有 00:00:02:0000\d{5}$/,
   );
   await expect.poll(() => state.requests).toBeGreaterThan(0);
   // 等初次 SSE 合并刷新完成，再隔离到点的请求。
@@ -323,7 +343,7 @@ test("到点主动刷新，失败保留零值倒计时，后端确认后自动�
   await page.clock.setFixedTime(opensAt);
   await expect.poll(() => state.requests).toBeGreaterThan(before);
   await expect(page.getByRole("timer")).toHaveAccessibleName(
-    "距离开市还有 0 小时 0 分 0 秒 000000000 纳秒",
+    "距离开市还有 00:00:00:000000000",
   );
   await expect(
     page.getByText("隔离测试：开市状态暂不可用", { exact: true }),
@@ -382,7 +402,7 @@ test("最后一毫秒继续显示纳秒，归零前不提前确认开市", async
   const state = await mockOpening(page, opensAt - 1);
   await page.goto("/");
   await expect(page.getByRole("timer")).toHaveAccessibleName(
-    "距离开市还有 0 小时 0 分 0 秒 001000000 纳秒",
+    /^距离开市还有 00:00:00:0010\d{5}$/,
   );
   const confirming = page.getByText(
     "正在确认开市状态，确认后将自动进入交易站。",
@@ -392,23 +412,36 @@ test("最后一毫秒继续显示纳秒，归零前不提前确认开市", async
   await expect.poll(() => state.requests).toBe(2);
   await page.clock.setFixedTime(opensAt);
   await expect(page.getByRole("timer")).toHaveAccessibleName(
-    "距离开市还有 0 小时 0 分 0 秒 000000000 纳秒",
+    "距离开市还有 00:00:00:000000000",
   );
   await expect(confirming).toBeVisible();
   await expect.poll(() => state.requests).toBeGreaterThan(2);
 });
 
-test("原生高精度时钟逐帧更新九位纳秒，不重复请求后端", async ({ page }) => {
+test("模拟尾数逐帧变化，单行无单位且不重复请求后端", async ({ page }) => {
   const state = await mockOpening(page, noon, true);
   await page.goto("/");
-  const timer = page.getByRole("timer"),
-    nanos = timer.getByText(/^\d{9}$/);
-  await expect(nanos).toBeVisible();
+  const timer = page.getByRole("timer");
+  await expect(timer).toHaveText(/^\d{2}:\d{2}:\d{2}:\d{9}$/);
+  await expect(timer).not.toContainText(/小时|分钟|纳秒|秒/);
   await expect(timer).toHaveAttribute("aria-live", "off");
   await expect.poll(() => state.requests).toBe(2);
-  const first = await nanos.textContent();
-  await expect.poll(() => nanos.textContent()).not.toBe(first);
-  await expect(nanos).not.toHaveText("000000000");
+  const samples = await timer.evaluate(
+    (element) =>
+      new Promise<string[]>((resolve) => {
+        const values: string[] = [];
+        const sample = () => {
+          values.push(element.textContent!.slice(-5));
+          if (values.length === 12) resolve(values);
+          else requestAnimationFrame(sample);
+        };
+        requestAnimationFrame(sample);
+      }),
+  );
+  for (let digit = 0; digit < 5; digit++)
+    expect(new Set(samples.map((value) => value[digit])).size).toBeGreaterThan(
+      1,
+    );
   await expect(
     page.getByText("正在确认开市状态，确认后将自动进入交易站。", {
       exact: true,

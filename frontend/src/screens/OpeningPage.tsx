@@ -1,6 +1,6 @@
 "use client";
-// 层级：剩余时分秒 > 九位纳秒 > 开市时间与账户提示；主要操作沿用页头登录。
-// 复用 Kumo 主题色与既有间距、字号，纳秒单独一行，保持手机布局稳定。
+// 倒计时使用单行 HH:MM:SS:NNNNNNNNN，不显示单位；数字保持等宽。
+// 层级：倒计时 > 开市时间 > 账户提示；主要操作沿用页头登录。
 import { useExchange } from "../core/Exchange";
 import { date } from "../core/format";
 import { useCountdown } from "../core/useCountdown";
@@ -13,7 +13,10 @@ export function OpeningPage({ opensAt }: { opensAt: number }) {
     hours = Math.floor(seconds / 3600),
     minutes = Math.floor((seconds % 3600) / 60),
     remainingSeconds = seconds % 60,
-    nanoseconds = String(remaining % 1_000_000_000n).padStart(9, "0");
+    nanoseconds = String(remaining % 1_000_000_000n).padStart(9, "0"),
+    timestamp = `${[hours, minutes, remainingSeconds]
+      .map((value) => String(value).padStart(2, "0"))
+      .join(":")}:${nanoseconds}`;
   return (
     <section className={styles.opening} aria-labelledby="opening-title">
       <div>
@@ -24,27 +27,9 @@ export function OpeningPage({ opensAt }: { opensAt: number }) {
         className={styles.timer}
         role="timer"
         aria-live="off"
-        aria-label={`距离开市还有 ${hours} 小时 ${minutes} 分 ${remainingSeconds} 秒 ${nanoseconds} 纳秒`}
+        aria-label={`距离开市还有 ${timestamp}`}
       >
-        <div className={styles.units}>
-          {[
-            [hours, "小时"],
-            [minutes, "分钟"],
-            [remainingSeconds, "秒"],
-          ].map(([value, label], index) => (
-            <div className={styles.unit} key={label} aria-hidden="true">
-              <span className={styles.digits}>
-                {index > 0 && <span className={styles.colon}>:</span>}
-                {String(value).padStart(2, "0")}
-              </span>
-              <span className="caption">{label}</span>
-            </div>
-          ))}
-        </div>
-        <div className={styles.subseconds} aria-hidden="true">
-          <span className={styles.subsecondDigits}>{nanoseconds}</span>
-          <span className="caption">纳秒</span>
-        </div>
+        {timestamp}
       </div>
       <div className={styles.details}>
         <p>

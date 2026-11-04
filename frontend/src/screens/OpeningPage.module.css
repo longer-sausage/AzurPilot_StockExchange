@@ -12,48 +12,11 @@
 }
 
 .timer {
-  display: grid;
-  gap: 24px;
-  justify-items: center;
-}
-
-.units {
-  display: flex;
-  gap: 32px;
-}
-
-.subseconds {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.subsecondDigits {
-  font-size: 32px;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.2;
-}
-
-.unit {
-  position: relative;
-  display: grid;
-  gap: 12px;
-}
-
-.digits {
-  font-size: 96px;
+  font-size: 64px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-
-.colon {
-  position: absolute;
-  right: calc(100% + 8px);
-  color: var(--text-color-kumo-subtle);
-  font-size: 64px;
-  line-height: 1.5;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .details {
@@ -62,20 +25,8 @@
   max-width: 65ch;
 }
 
-@media (max-width: 640px) {
-  .units {
-    gap: 24px;
-  }
-
-  .digits {
-    font-size: 48px;
-  }
-
-  .colon {
-    font-size: 32px;
-  }
-
-  .subsecondDigits {
-    font-size: 24px;
+@media (max-width: 768px) {
+  .timer {
+    font-size: 28px;
   }
 }
